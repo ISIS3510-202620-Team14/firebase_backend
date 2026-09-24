@@ -1,0 +1,32 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Perfil: uno por usuario, con el id igual a su uid de Auth.
+    // Solo el backend (Admin SDK) crea y borra perfiles; el cliente nunca.
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // El usuario puede corregir su nombre, pero no tocar uid, email ni rol.
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.rol == resource.data.rol
+                    && request.resource.data.uid == resource.data.uid
+                    && request.resource.data.email == resource.data.email;
+
+      allow create, delete: if false;
+
+      // Acciones registradas por el propio usuario (resumen de Hoy).
+      match /actions/{actionId} {
+        allow read, write: if request.auth != null
+                           && request.auth.uid == userId;
+      }
+    }
+
+    // Todo lo que no coincida arriba queda denegado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
