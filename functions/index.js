@@ -92,7 +92,7 @@ exports.register = onRequest(opciones, async (req, res) => {
       "auth/invalid-password": ["weak-password", 400],
     };
     const [code, estado] = mapa[e.code] || ["internal", 500];
-    if (code === "internal") logger.error("register falló", { code: e.code });
+    if (code === "internal") logger.error(`register falló: code=${e.code} message=${e.message}`);
     return error(res, estado, code, MENSAJES[code]);
   }
 });
