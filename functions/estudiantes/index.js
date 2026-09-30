@@ -1,7 +1,7 @@
 const express = require("express");
 const { getFirestore } = require("firebase-admin/firestore");
 const { ErrorApi, manejarErrores } = require("./errores");
-const { autenticar, puedeVerEscuela } = require("./auth");
+const { autenticar, puedeVerEscuela, escuelaPedida } = require("./auth");
 const { NIVELES, MATERIAS, TIPOS_EVALUACION, GRADOS, SEXOS, MUESTRAS, describirNivel } = require("./niveles");
 
 const TOLERANCIA_FUTURO_MS = 5 * 60 * 1000; // 5 minutos en milisegundos (Margen´para relojes de celular adelantados)
@@ -146,10 +146,11 @@ function resumirMateria(materia, evaluaciones) {
 //listar
 app.get("/", async (req, res) => {
     const { usuario } = req;
-    const schoolId = usuario.rol == "admin" ? req.query.schoolId : usuario.schoolId;
+    const schoolId = escuelaPedida(usuario, req.query.schoolId);
 
     let consulta = coleccion().where("active", "==", true);
     if(schoolId) consulta = consulta.where("schoolId", "==", schoolId);
+    else if(usuario.rol === "docente") consulta = consulta.where("schoolId", "in", usuario.schoolIds);
     if(req.query.grade) consulta = consulta.where("grade", "==", Number(req.query.grade));
     if(req.query.campus) consulta = consulta.where("campus", "==", req.query.campus);
 
@@ -173,7 +174,7 @@ app.get("/", async (req, res) => {
 //crear
 app.post("/", async (req, res) => {
     const body = { ...req.body};
-    if(req.usuario.rol === "docente") body.schoolId = req.usuario.schoolId;
+    body.schoolId = escuelaPedida(req.usuario, body.schoolId);
 
     // "Estudiante inesperado": la app no manda código y el backend asigna uno provisional.
     const provisional = body.provisional === true;
@@ -204,7 +205,7 @@ app.post("/", async (req, res) => {
 //importar lista (el "Importar lista" de Mi lista): varios niños de una vez, los códigos repetidos se saltan
 app.post("/import", async (req, res) => {
     const lista = req.body?.students;
-    const schoolId = req.usuario.rol === "docente" ? req.usuario.schoolId : req.body?.schoolId;
+    const schoolId = escuelaPedida(req.usuario, req.body?.schoolId);
 
     const invalidos = [];
     if(typeof schoolId !== "string" || !schoolId.trim()) invalidos.push("schoolId");
