@@ -1,7 +1,7 @@
 const express = require("express");
 const { getFirestore } = require("firebase-admin/firestore");
 const { ErrorApi, manejarErrores } = require("../estudiantes/errores");
-const { autenticar, escuelaPedida } = require("../estudiantes/auth");
+const { autenticar, puedeVerEscuela, escuelaPedida } = require("../estudiantes/auth");
 const { MATERIAS } = require("../estudiantes/niveles");
 
 const app = express();
@@ -39,6 +39,13 @@ async function validarProfesor(teacherId, schoolId) {
     if (!perfil.exists || perfil.get("rol") !== "docente" || !escuelas.includes(schoolId)) {
         throw new ErrorApi(400, "invalid-argument", "El profesor no es un docente de esa escuela.");
     }
+}
+
+async function cargarGrupo(req) {
+    const doc = await coleccion().doc(req.params.id).get();
+    if(!doc.exists || !doc.get("active")) throw new ErrorApi(404, "not-found", "No encontramos ese grupo.");
+    if(!puedeVerEscuela(req.usuario, doc.get("schoolId"))) throw new ErrorApi(403, "permission-denied");
+    return doc;
 }
 
 function aRespuesta(doc) {
@@ -96,6 +103,57 @@ app.post("/", async (req, res) => {
         updatedAt: ahora
     });
     res.status(201).json(aRespuesta(await ref.get()));
+});
+
+//detalle: el grupo con el nombre del profesor y los datos básicos de cada niño
+app.get("/:id", async (req, res) => {
+    const doc = await cargarGrupo(req);
+    const db = getFirestore();
+    const ids = doc.get("studentIds") || [];
+
+    const [profesor, ...estudiantes] = await db.getAll(
+        db.collection("users").doc(doc.get("teacherId")),
+        ...ids.map((id) => db.collection("students").doc(id))
+    );
+
+    res.status(200).json({
+        ...aRespuesta(doc),
+        teacher: { id: profesor.id, fullName: profesor.exists ? profesor.get("fullName") : null },
+        students: estudiantes
+            .filter((e) => e.exists && e.get("active"))
+            .map((e) => ({ id: e.id, code: e.get("code"), fullName: e.get("fullName"), grade: e.get("grade") }))
+    });
+});
+
+//editar
+app.patch("/:id", async (req, res) => {
+    const doc = await cargarGrupo(req);
+    const { datos, invalidos } = validarGrupo(req.body, true);
+    if(invalidos.length) throw invalido(invalidos);
+    if(!Object.keys(datos).length) throw new ErrorApi(400, "invalid-argument", "No enviaste ningún campo para actualizar.");
+    if(datos.schoolId && !puedeVerEscuela(req.usuario, datos.schoolId)) throw new ErrorApi(403, "permission-denied");
+
+    // Con niños adentro, cambiar la materia o la escuela los dejaría en un grupo que no les corresponde.
+    const cambiaMateria = datos.subject && datos.subject !== doc.get("subject");
+    const cambiaEscuela = datos.schoolId && datos.schoolId !== doc.get("schoolId");
+    if((cambiaMateria || cambiaEscuela) && doc.get("studentIds")?.length) {
+        throw new ErrorApi(409, "failed-precondition", "Saca a los estudiantes del grupo antes de cambiar su materia o escuela.");
+    }
+
+    if(datos.teacherId || cambiaEscuela) {
+        await validarProfesor(datos.teacherId || doc.get("teacherId"), datos.schoolId || doc.get("schoolId"));
+    }
+
+    await doc.ref.update({ ...datos, updatedAt: new Date().toISOString() });
+    res.status(200).json(aRespuesta(await doc.ref.get()));
+});
+
+//eliminar
+app.delete("/:id", async (req, res) => {
+    const doc = await cargarGrupo(req);
+    const ahora = new Date().toISOString();
+    await doc.ref.update({ active: false, deletedBy: req.usuario.uid, deletedAt: ahora, updatedAt: ahora });
+    res.status(200).json({ id: doc.id, active: false });
 });
 
 app.use(manejarErrores);
