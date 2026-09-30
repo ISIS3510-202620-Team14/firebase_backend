@@ -149,3 +149,10 @@ exports.login = onRequest(opciones, async (req, res) => {
   const customToken = await getAuth().createCustomToken(uid, { rol });
   return responder(res, 200, { uid, rol, customToken });
 });
+
+const estudiantes = require("./estudiantes");
+
+exports.students = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  estudiantes,
+);

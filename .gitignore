@@ -3,3 +3,6 @@ functions/.env
 functions/.env.local
 *.log
 .firebase/
+
+functions/.env.*
+!functions/.env.example
