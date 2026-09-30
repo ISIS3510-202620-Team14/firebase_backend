@@ -1,5 +1,5 @@
 const express = require("express");
-const { getFirestore } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { ErrorApi, manejarErrores } = require("../estudiantes/errores");
 const { autenticar, puedeVerEscuela, escuelaPedida } = require("../estudiantes/auth");
 const { MATERIAS } = require("../estudiantes/niveles");
@@ -62,6 +62,10 @@ function aRespuesta(doc) {
     };
 }
 
+
+
+
+
 //listar
 app.get("/", async (req, res) => {
     const { usuario } = req;
@@ -80,6 +84,10 @@ app.get("/", async (req, res) => {
     const groups = snap.docs.map(aRespuesta).sort((a, b) => a.name.localeCompare(b.name, "es"));
     res.status(200).json({ groups });
 });
+
+
+
+
 
 //crear
 app.post("/", async (req, res) => {
@@ -105,6 +113,10 @@ app.post("/", async (req, res) => {
     res.status(201).json(aRespuesta(await ref.get()));
 });
 
+
+
+
+
 //detalle: el grupo con el nombre del profesor y los datos básicos de cada niño
 app.get("/:id", async (req, res) => {
     const doc = await cargarGrupo(req);
@@ -124,6 +136,10 @@ app.get("/:id", async (req, res) => {
             .map((e) => ({ id: e.id, code: e.get("code"), fullName: e.get("fullName"), grade: e.get("grade") }))
     });
 });
+
+
+
+
 
 //editar
 app.patch("/:id", async (req, res) => {
@@ -148,12 +164,73 @@ app.patch("/:id", async (req, res) => {
     res.status(200).json(aRespuesta(await doc.ref.get()));
 });
 
+
+
+
+
 //eliminar
 app.delete("/:id", async (req, res) => {
     const doc = await cargarGrupo(req);
     const ahora = new Date().toISOString();
     await doc.ref.update({ active: false, deletedBy: req.usuario.uid, deletedAt: ahora, updatedAt: ahora });
     res.status(200).json({ id: doc.id, active: false });
+});
+
+
+
+
+
+//agregar estudiante: un niño está en un solo grupo por materia, así que sale de los otros de esa materia
+app.post("/:id/students", async (req, res) => {
+    const { studentId } = req.body || {};
+    if(typeof studentId !== "string" || !studentId.trim()) throw invalido(["studentId"]);
+
+    const doc = await cargarGrupo(req);
+    const db = getFirestore();
+    const estudianteRef = db.collection("students").doc(studentId.trim());
+
+    const resultado = await db.runTransaction(async (tx) => {
+        // En una transacción se lee todo primero y se escribe después.
+        const [grupo, estudiante, conElNino] = await Promise.all([
+            tx.get(doc.ref),
+            tx.get(estudianteRef),
+            tx.get(coleccion().where("studentIds", "array-contains", estudianteRef.id))
+        ]);
+
+        if(!estudiante.exists || !estudiante.get("active")) throw new ErrorApi(404, "not-found", "No encontramos ese estudiante.");
+        if(estudiante.get("schoolId") !== grupo.get("schoolId")) {
+            throw new ErrorApi(400, "invalid-argument", "El estudiante no es de la escuela del grupo.");
+        }
+        if(grupo.get("studentIds").includes(estudianteRef.id)) return { agregado: false, movidoDe: [] };
+
+        const ahora = new Date().toISOString();
+        const otros = conElNino.docs.filter((g) => g.id !== grupo.id && g.get("active") && g.get("subject") === grupo.get("subject"));
+        for(const otro of otros) {
+            tx.update(otro.ref, { studentIds: FieldValue.arrayRemove(estudianteRef.id), updatedAt: ahora });
+        }
+        tx.update(grupo.ref, { studentIds: FieldValue.arrayUnion(estudianteRef.id), updatedAt: ahora });
+        return { agregado: true, movidoDe: otros.map((g) => g.id) };
+    });
+
+    res.status(resultado.agregado ? 201 : 200).json({
+        ...aRespuesta(await doc.ref.get()),
+        movedFrom: resultado.movidoDe
+    });
+});
+
+
+
+
+
+
+//quitar estudiante
+app.delete("/:id/students/:studentId", async (req, res) => {
+    const doc = await cargarGrupo(req);
+    if(!(doc.get("studentIds") || []).includes(req.params.studentId)) {
+        throw new ErrorApi(404, "not-found", "Ese estudiante no está en el grupo.");
+    }
+    await doc.ref.update({ studentIds: FieldValue.arrayRemove(req.params.studentId), updatedAt: new Date().toISOString() });
+    res.status(200).json(aRespuesta(await doc.ref.get()));
 });
 
 app.use(manejarErrores);
