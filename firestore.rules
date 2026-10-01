@@ -11,9 +11,9 @@ service cloud.firestore {
       // El usuario puede corregir su nombre, pero no tocar uid, email ni rol.
       allow update: if request.auth != null
                     && request.auth.uid == userId
-                    && request.resource.data.rol == resource.data.rol
-                    && request.resource.data.uid == resource.data.uid
-                    && request.resource.data.email == resource.data.email;
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName'])
+                    && request.resource.data.fullName is string
+                    && request.resource.data.fullName.size() > 0;
 
       allow create, delete: if false;
 
@@ -22,6 +22,19 @@ service cloud.firestore {
         allow read, write: if request.auth != null
                            && request.auth.uid == userId;
       }
+    }
+
+    // Eventos de analitica. El cliente solo puede crear eventos propios y
+    // leer los suyos (BQ tipo 2). Nadie los edita ni los borra desde la app.
+    match /events/{eventId} {
+      allow create: if request.auth != null
+                    && request.resource.data.teacherId == request.auth.uid
+                    && request.resource.data.name is string
+                    && request.resource.data.platform in ['flutter', 'kotlin']
+                    && request.resource.data.createdAt == request.time;
+      allow read: if request.auth != null
+                  && resource.data.teacherId == request.auth.uid;
+      allow update, delete: if false;
     }
 
     // Todo lo que no coincida arriba queda denegado.
