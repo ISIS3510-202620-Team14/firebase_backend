@@ -175,3 +175,10 @@ exports.teachers = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   profesores,
 );
+
+const instituciones = require("./instituciones");
+
+exports.schools = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  instituciones,
+);
