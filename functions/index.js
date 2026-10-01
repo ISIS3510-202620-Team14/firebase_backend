@@ -1,9 +1,11 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const { defineString } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
-const admin = require("firebase-admin");
+const { initializeApp } = require("firebase-admin/app");
+const { getAuth } = require("firebase-admin/auth");
+const { getFirestore } = require("firebase-admin/firestore");
 
-admin.initializeApp();
+initializeApp();
 
 const WEB_API_KEY = defineString("WEB_API_KEY");
 
@@ -68,7 +70,7 @@ exports.register = onRequest(opciones, async (req, res) => {
   const fullName = req.body.fullName.trim();
 
   try {
-    const usuario = await admin.auth().createUser({
+    const usuario = await getAuth().createUser({
       email,
       password: req.body.password,
       displayName: fullName,
@@ -81,9 +83,9 @@ exports.register = onRequest(opciones, async (req, res) => {
       rol: ROL_INICIAL,
       createdAt: new Date().toISOString(),
     };
-    await admin.firestore().collection("users").doc(usuario.uid).set(perfil);
+    await getFirestore().collection("users").doc(usuario.uid).set(perfil);
 
-    const customToken = await admin.auth().createCustomToken(usuario.uid, { rol: ROL_INICIAL });
+    const customToken = await getAuth().createCustomToken(usuario.uid, { rol: ROL_INICIAL });
     return responder(res, 201, { uid: usuario.uid, rol: ROL_INICIAL, customToken });
   } catch (e) {
     const mapa = {
@@ -92,7 +94,7 @@ exports.register = onRequest(opciones, async (req, res) => {
       "auth/invalid-password": ["weak-password", 400],
     };
     const [code, estado] = mapa[e.code] || ["internal", 500];
-    if (code === "internal") logger.error("register falló", { code: e.code });
+    if (code === "internal") logger.error(`register falló: code=${e.code} message=${e.message}`);
     return error(res, estado, code, MENSAJES[code]);
   }
 });
@@ -130,7 +132,7 @@ exports.login = onRequest(opciones, async (req, res) => {
 
   try {
     const uid = datos.localId;
-    const perfilRef = admin.firestore().collection("users").doc(uid);
+    const perfilRef = getFirestore().collection("users").doc(uid);
     const perfil = await perfilRef.get();
 
     // Cuentas creadas antes de este backend pueden no tener perfil todavía.
@@ -144,11 +146,32 @@ exports.login = onRequest(opciones, async (req, res) => {
       });
     }
 
-    const rol = perfil.get("rol") || ROL_INICIAL;
-    const customToken = await admin.auth().createCustomToken(uid, { rol });
+    const rol = perfil.exists ? perfil.get("rol") || ROL_INICIAL : ROL_INICIAL;
+    const customToken = await getAuth().createCustomToken(uid, { rol });
     return responder(res, 200, { uid, rol, customToken });
   } catch (e) {
     logger.error("login: no se pudo abrir la sesión", { code: e.code });
     return error(res, 500, "internal", MENSAJES.internal);
   }
 });
+
+const estudiantes = require("./estudiantes");
+
+exports.students = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  estudiantes,
+);
+
+const grupos = require("./grupos");
+
+exports.groups = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  grupos,
+);
+
+const profesores = require("./profesores");
+
+exports.teachers = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  profesores,
+);
