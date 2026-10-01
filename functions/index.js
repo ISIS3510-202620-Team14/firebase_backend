@@ -182,3 +182,10 @@ exports.schools = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   instituciones,
 );
+
+const agrupaciones = require("./agrupaciones");
+
+exports.groupings = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  agrupaciones,
+);
