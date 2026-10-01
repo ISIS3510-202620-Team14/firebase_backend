@@ -163,3 +163,10 @@ exports.groups = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   grupos,
 );
+
+const profesores = require("./profesores");
+
+exports.teachers = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  profesores,
+);
