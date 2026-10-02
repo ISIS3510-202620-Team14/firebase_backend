@@ -189,10 +189,3 @@ exports.groupings = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   agrupaciones,
 );
-
-const appOpens = require("./appOpens");
-
-exports.appOpens = onRequest(
-  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
-  appOpens,
-);
