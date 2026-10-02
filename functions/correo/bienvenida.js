@@ -22,8 +22,9 @@ function armarBienvenida({ nombre, instituciones }) {
     "",
     "Tu cuenta de docente en ENAd Móvil quedó creada.",
     "",
-    "Quedaste vinculado a:",
-    ...lineas.map((l) => `- ${l}`),
+    ...(lineas.length
+      ? ["Quedaste vinculado a:", ...lineas.map((l) => `- ${l}`)]
+      : ["Un administrador te asignará tu institución."]),
     "",
     "Ya puedes entrar a la app con tu correo y tu contraseña.",
     "",
@@ -36,10 +37,12 @@ function armarBienvenida({ nombre, instituciones }) {
     <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e7dfd3;border-radius:12px;padding:28px">
       <h1 style="margin:0 0 16px;font-size:22px">Hola, ${escapar(nombre)}</h1>
       <p style="margin:0 0 16px">Tu cuenta de docente en <strong>ENAd Móvil</strong> quedó creada.</p>
-      <p style="margin:0 0 8px;color:#6b6259">Quedaste vinculado a:</p>
+      ${lineas.length
+        ? `<p style="margin:0 0 8px;color:#6b6259">Quedaste vinculado a:</p>
       <ul style="margin:0 0 20px;padding-left:20px">
         ${lineas.map((l) => `<li>${escapar(l)}</li>`).join("\n        ")}
-      </ul>
+      </ul>`
+        : `<p style="margin:0 0 20px;color:#6b6259">Un administrador te asignará tu institución.</p>`}
       <p style="margin:0">Ya puedes entrar a la app con tu correo y tu contraseña.</p>
       <p style="margin:24px 0 0;color:#c62222;font-weight:bold">Equipo ENAd Móvil</p>
     </div>

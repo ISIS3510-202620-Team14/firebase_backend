@@ -145,12 +145,26 @@ test("register rechaza la lista si una de las escuelas no existe", async () => {
   assert.strictEqual(otra.estado, 201);
 });
 
-test("register rechaza una lista de escuelas vacía", async () => {
+test("register sin instituciones crea la cuenta sin escuela (como la app de Kotlin)", async () => {
   const { estado, datos } = await llamar("register", {
-    email: `vacia.${Date.now()}@enad.test`,
+    email: `sinescuela.${Date.now()}@enad.test`,
     password: clave,
     fullName: "Sin Escuelas",
-    schoolIds: [],
+  });
+  assert.strictEqual(estado, 201, JSON.stringify(datos));
+  await comoAdmin(async (fs) => {
+    const perfil = await fs.collection("users").doc(datos.uid).get();
+    assert.deepStrictEqual(perfil.get("schoolIds"), []);
+    assert.strictEqual(perfil.get("rol"), "docente");
+  });
+});
+
+test("register rechaza escuelas con formato inválido", async () => {
+  const { estado, datos } = await llamar("register", {
+    email: `malformato.${Date.now()}@enad.test`,
+    password: clave,
+    fullName: "Mal Formato",
+    schools: [{ campusIds: ["sede"] }],
   });
   assert.strictEqual(estado, 400);
   assert.strictEqual(datos.error.code, "invalid-argument");

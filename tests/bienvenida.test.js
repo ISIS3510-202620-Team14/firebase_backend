@@ -18,6 +18,13 @@ test("la bienvenida saluda por nombre y lista instituciones con sus sedes", () =
   assert.match(html, /<li>I\.E\.R\. La Esperanza \(Sede Principal, Sede Rural\)<\/li>/);
 });
 
+test("sin instituciones la bienvenida avisa que un admin la asignará", () => {
+  const { html, texto } = armarBienvenida({ nombre: "Luis", instituciones: [] });
+  assert.match(texto, /Un administrador te asignará tu institución/);
+  assert.ok(!texto.includes("Quedaste vinculado"));
+  assert.ok(!html.includes("<ul"));
+});
+
 test("la bienvenida escapa el HTML que venga en los nombres", () => {
   const { html } = armarBienvenida({
     nombre: "<script>alert(1)</script>",

@@ -94,11 +94,14 @@ const textoNoVacio = (v) => typeof v === "string" && v.trim() !== "";
 
 // Escuelas y sedes pedidas en el registro: schools [{ schoolId, campusIds }], o las formas viejas
 // schoolIds (lista) / schoolId (una sola) sin sedes. Devuelve [{ schoolId, campusIds }] sin repetidos,
-// o null si el formato no sirve.
+// [] si no mandan ninguna (apps que aún no piden escuela; un admin la asigna después), o null si el
+// formato no sirve.
 function escuelasPedidas(body) {
   let lista;
   if (Array.isArray(body?.schools)) {
     lista = body.schools;
+  } else if (body?.schoolIds === undefined && body?.schoolId === undefined) {
+    lista = [];
   } else {
     const ids = Array.isArray(body?.schoolIds) ? body.schoolIds : [body?.schoolId];
     lista = ids.map((schoolId) => ({ schoolId, campusIds: [] }));
@@ -111,7 +114,7 @@ function escuelasPedidas(body) {
     const previas = porEscuela.get(item.schoolId.trim()) || [];
     porEscuela.set(item.schoolId.trim(), [...new Set([...previas, ...campusIds.map((c) => c.trim())])]);
   }
-  if (!porEscuela.size || porEscuela.size > MAX_ESCUELAS) return null;
+  if (porEscuela.size > MAX_ESCUELAS) return null;
   return [...porEscuela].map(([schoolId, campusIds]) => ({ schoolId, campusIds }));
 }
 
@@ -146,9 +149,9 @@ exports.register = onRequest({ ...opciones, secrets: [BREVO_API_KEY] }, async (r
   let usuario;
   try {
     // Se revisa antes de crear la cuenta para no dejar usuarios sin escuela o con sedes ajenas.
-    const escuelas = await getFirestore().getAll(
-      ...pedidas.map((p) => getFirestore().collection("schools").doc(p.schoolId)),
-    );
+    const escuelas = pedidas.length
+      ? await getFirestore().getAll(...pedidas.map((p) => getFirestore().collection("schools").doc(p.schoolId)))
+      : [];
     if (escuelas.some((e) => !e.exists || e.get("active") === false)) {
       return error(res, 400, "school-not-found", MENSAJES["school-not-found"]);
     }
