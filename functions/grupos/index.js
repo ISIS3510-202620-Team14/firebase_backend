@@ -9,6 +9,8 @@ app.use(autenticar);
 
 const coleccion = () => getFirestore().collection("groups");
 
+const MAX_HORAS_DIA = 8; //Horas planeadas de un grupo en un dia
+
 function invalido(campos) {
     return new ErrorApi(400, "invalid-argument", `Revisa estos campos: ${campos.join(", ")}.`);
 }
@@ -29,7 +31,36 @@ function validarGrupo(body = {}, parcial = false) {
         if (MATERIAS.includes(body.subject)) datos.subject = body.subject;
         else invalidos.push("subject");
     }
+    if (body.campusId !== undefined) {
+        if (body.campusId === null) datos.campusId = null;
+        else if (typeof body.campusId === "string" && body.campusId.trim()) datos.campusId = body.campusId.trim();
+        else invalidos.push("campusId");
+    }
+    if (body.schedule !== undefined) {
+        const horario = horarioDesde(body.schedule);
+        if (horario) datos.schedule = horario;
+        else invalidos.push("schedule");
+    }
     return { datos, invalidos };
+}
+
+// Horario semanal: [{ day: 1..7 (lunes = 1), plannedHours }] sin días repetidos. Devuelve null si no sirve.
+function horarioDesde(lista) {
+    if(!Array.isArray(lista) || lista.length > 7) return null;
+    const dias = new Set();
+    for (const item of lista) {
+        if (!Number.isInteger(item?.day) || item.day < 1 || item.day > 7  || dias.has(item.day)) return null;
+        if (typeof item.plannedHours != "number" || !(item.plannedHours > 0) || item.plannedHours > MAX_HORAS_DIA) return null;
+        dias.add(item.day);
+    }
+    return lista.map((item) => ({ day: item.day, plannedHours: item.plannedHours})).sort((a,b) => a.day - b.day);
+}
+
+async function validarSede(schoolId, campusId) {
+    const escuela = await getFirestore().collection("schools").doc(schoolId).get();
+    if (!(escuela.get("campuses") || []).some((s) => s.id === campusId)) {
+        throw new ErrorApi(400, "invalid-argument", "Esa sede no pertenece a la escuela del grupo.");
+    }
 }
 
 // El profesor tiene que ser un docente que trabaje en la escuela del grupo.
@@ -56,6 +87,8 @@ function aRespuesta(doc) {
         subject: d.subject,
         teacherId: d.teacherId,
         schoolId: d.schoolId,
+        campusId: d.campusId ?? null,
+        schedule: d.schedule ?? [],
         studentIds: d.studentIds ?? [],
         createdAt: d.createdAt,
         updatedAt: d.updatedAt
@@ -99,10 +132,13 @@ app.post("/", async (req, res) => {
     const { datos, invalidos } = validarGrupo(body);
     if(invalidos.length) throw invalido(invalidos);
     await validarProfesor(datos.teacherId, datos.schoolId);
+    if (datos.campusId) await validarSede(datos.schoolId, datos.campusId);
 
     const ahora = new Date().toISOString();
     const ref = coleccion().doc();
     await ref.set({
+        campusId: null,
+        schedule: [],
         ...datos,
         studentIds: [],
         active: true,
@@ -158,6 +194,11 @@ app.patch("/:id", async (req, res) => {
 
     if(datos.teacherId || cambiaEscuela) {
         await validarProfesor(datos.teacherId || doc.get("teacherId"), datos.schoolId || doc.get("schoolId"));
+    }
+    // Si cambia la sede o la escuela, la sede (nueva o la que ya tenía) tiene que ser de la escuela final.
+    const sede = datos.campusId !== undefined ? datos.campusId : doc.get("campusId");
+    if (sede && (datos.campusId !== undefined || cambiaEscuela)) {
+        await validarSede(datos.schoolId || doc.get("schoolId"), sede);
     }
 
     await doc.ref.update({ ...datos, updatedAt: new Date().toISOString() });
