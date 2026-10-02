@@ -6,3 +6,4 @@ functions/.env.local
 
 functions/.env.*
 !functions/.env.example
+functions/.secret.local
