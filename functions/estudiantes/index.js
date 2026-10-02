@@ -14,6 +14,12 @@ app.use(autenticar);
 
 const coleccion = () => getFirestore().collection("students");
 
+// Todo estudiante pertenece a una escuela que existe y sigue activa. Va dentro de la transacción, antes de escribir.
+async function exigirEscuela(tx, schoolId) {
+    const escuela = await tx.get(getFirestore().collection("schools").doc(schoolId));
+    if (!escuela.exists || escuela.get("active") === false) throw new ErrorApi(400, "school-not-found");
+}
+
 function invalido(campos) {
     return new ErrorApi(400, "invalid-argument", `Revisa estos campos: ${campos.join(", ")}.`)
 }
@@ -195,6 +201,7 @@ app.post("/", async (req, res) => {
             if(!puedeVerEscuela(req.usuario, previo.get("schoolId"))) throw new ErrorApi(409, "already-exists");
             return false;
         }
+        await exigirEscuela(tx, datos.schoolId);
         if(await codigoOcupado(tx, datos.schoolId, datos.code)) throw new ErrorApi(409, "already-exists");
         tx.set(ref, documentoNuevo(datos, req.usuario.uid, ahora));
         return true;
@@ -221,6 +228,7 @@ app.post("/import", async (req, res) => {
 
     const ahora = new Date().toISOString();
     const resultado = await getFirestore().runTransaction(async (tx) => {
+        await exigirEscuela(tx, schoolId.trim());
         const existentes = await tx.get(coleccion().where("schoolId", "==", schoolId.trim()).where("active", "==", true));
         const codigos = new Set(existentes.docs.map((d) => d.get("code")));
         const creados = [];
@@ -262,6 +270,7 @@ app.patch("/:id", async (req, res) => {
     const final = { schoolId: doc.get("schoolId"), code: doc.get("code"), ...datos};
 
     await getFirestore().runTransaction(async (tx) => {
+        if(datos.schoolId) await exigirEscuela(tx, datos.schoolId);
         const cambiaIdentidad = datos.code || datos.schoolId;
         if(cambiaIdentidad && (await codigoOcupado(tx, final.schoolId, final.code, doc.id))) {
             throw new ErrorApi(409, "already-exists");

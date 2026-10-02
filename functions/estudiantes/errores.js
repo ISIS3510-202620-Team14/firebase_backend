@@ -4,6 +4,8 @@ const MENSAJES = {
     unauthenticated: "Debes iniciar sesión.",
     "permission-denied": "No tienes permiso para esta acción.",
     "no-school": "Tu cuenta todavía no tiene una escuela asignada.",
+    "user-disabled": "Esta cuenta está deshabilitada.",
+    "school-not-found": "La escuela no existe o está dada de baja.",
     "not-found": "No encontramos ese estudiante.",
     "already-exists": "Ya hay un estudiante con ese número en la escuela.",
     "invalid-argument": "Revisa los datos enviados.",

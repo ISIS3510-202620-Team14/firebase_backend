@@ -4,13 +4,18 @@ const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore } = require("firebase-admin/firestore");
+const { enviarCorreo, BREVO_API_KEY } = require("./correo/brevo");
+const { armarBienvenida } = require("./correo/bienvenida");
 
 initializeApp();
 
 const WEB_API_KEY = defineString("WEB_API_KEY");
 
-// Rol con el que nace toda cuenta. Subirlo de nivel es tarea de un administrador.
-const ROL_INICIAL = "sin_privilegios";
+// Rol con el que nace toda cuenta. Cambiarlo es tarea de un administrador.
+const ROL_INICIAL = "docente";
+
+// Un docente puede trabajar en varias escuelas; este es el tope al registrarse.
+const MAX_ESCUELAS = 10;
 
 const opciones = { region: "us-central1", cors: true };
 
@@ -54,14 +59,86 @@ const MENSAJES = {
   "email-already-in-use": "Ya existe una cuenta con ese correo.",
   "weak-password": "La contraseña debe tener al menos 6 caracteres.",
   "invalid-argument": "Faltan datos obligatorios.",
+  "school-not-found": "Alguna de las escuelas elegidas no existe.",
+  "campus-not-found": "Alguna de las sedes elegidas no pertenece a su institución.",
   internal: "No pudimos completar la operación. Intenta de nuevo.",
 };
 
-// Crea la cuenta en Firebase Auth, su perfil con rol inicial y devuelve el token.
-exports.register = onRequest(opciones, async (req, res) => {
+// Escuelas que se pueden elegir al registrarse, con sus sedes. Es pública porque aún no hay sesión;
+// solo expone id, nombre, municipio y sedes.
+exports.registerSchools = onRequest(opciones, async (req, res) => {
+  if (req.method !== "GET") return error(res, 405, "invalid-argument", MENSAJES["invalid-argument"]);
+
+  try {
+    const todas = await getFirestore().collection("schools").get();
+    const schools = todas.docs
+      .filter((d) => d.get("active") !== false)
+      .map((d) => ({
+        id: d.id,
+        name: d.get("name") ?? d.id,
+        municipality: d.get("municipality") ?? null,
+        // Las sedes sin id o nombre (cargadas a mano incompletas) no se pueden elegir.
+        campuses: (d.get("campuses") || [])
+          .filter((c) => textoNoVacio(c?.id) && textoNoVacio(c?.name))
+          .map((c) => ({ id: c.id, name: c.name })),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    return responder(res, 200, { schools });
+  } catch (e) {
+    logger.error(`registerSchools falló: ${e.message}`);
+    return error(res, 500, "internal", MENSAJES.internal);
+  }
+});
+
+const textoNoVacio = (v) => typeof v === "string" && v.trim() !== "";
+
+// Escuelas y sedes pedidas en el registro: schools [{ schoolId, campusIds }], o las formas viejas
+// schoolIds (lista) / schoolId (una sola) sin sedes. Devuelve [{ schoolId, campusIds }] sin repetidos,
+// [] si no mandan ninguna (apps que aún no piden escuela; un admin la asigna después), o null si el
+// formato no sirve.
+function escuelasPedidas(body) {
+  let lista;
+  if (Array.isArray(body?.schools)) {
+    lista = body.schools;
+  } else if (body?.schoolIds === undefined && body?.schoolId === undefined) {
+    lista = [];
+  } else {
+    const ids = Array.isArray(body?.schoolIds) ? body.schoolIds : [body?.schoolId];
+    lista = ids.map((schoolId) => ({ schoolId, campusIds: [] }));
+  }
+
+  const porEscuela = new Map();
+  for (const item of lista) {
+    const campusIds = item?.campusIds ?? [];
+    if (!textoNoVacio(item?.schoolId) || !Array.isArray(campusIds) || !campusIds.every(textoNoVacio)) return null;
+    const previas = porEscuela.get(item.schoolId.trim()) || [];
+    porEscuela.set(item.schoolId.trim(), [...new Set([...previas, ...campusIds.map((c) => c.trim())])]);
+  }
+  if (porEscuela.size > MAX_ESCUELAS) return null;
+  return [...porEscuela].map(([schoolId, campusIds]) => ({ schoolId, campusIds }));
+}
+
+// Avisa por correo que la cuenta quedó creada. Devuelve si Brevo lo aceptó; nunca lanza.
+function enviarBienvenida(email, fullName, escuelas, pedidas) {
+  const instituciones = escuelas.map((escuela, i) => {
+    const sedes = escuela.get("campuses") || [];
+    return {
+      nombre: escuela.get("name") ?? escuela.id,
+      sedes: pedidas[i].campusIds.map((id) => sedes.find((c) => c.id === id)?.name ?? id),
+    };
+  });
+  const { asunto, html, texto } = armarBienvenida({ nombre: fullName, instituciones });
+  return enviarCorreo({ para: email, nombre: fullName, asunto, html, texto });
+}
+
+// Crea la cuenta en Firebase Auth, su perfil activo con rol inicial y escuelas, y devuelve el token.
+// Al final envía el correo de bienvenida; si no sale, la cuenta igual queda creada.
+exports.register = onRequest({ ...opciones, secrets: [BREVO_API_KEY] }, async (req, res) => {
   if (req.method !== "POST") return error(res, 405, "invalid-argument", MENSAJES["invalid-argument"]);
 
   const vacios = faltantes(req.body, ["email", "password", "fullName"]);
+  const pedidas = escuelasPedidas(req.body);
+  if (!pedidas) vacios.push("schools");
   if (vacios.length) {
     return error(res, 400, "invalid-argument", `Faltan estos campos: ${vacios.join(", ")}.`);
   }
@@ -69,8 +146,28 @@ exports.register = onRequest(opciones, async (req, res) => {
   const email = req.body.email.trim();
   const fullName = req.body.fullName.trim();
 
+  let usuario;
   try {
-    const usuario = await getAuth().createUser({
+    // Se revisa antes de crear la cuenta para no dejar usuarios sin escuela o con sedes ajenas.
+    const escuelas = pedidas.length
+      ? await getFirestore().getAll(...pedidas.map((p) => getFirestore().collection("schools").doc(p.schoolId)))
+      : [];
+    if (escuelas.some((e) => !e.exists || e.get("active") === false)) {
+      return error(res, 400, "school-not-found", MENSAJES["school-not-found"]);
+    }
+    for (const [i, escuela] of escuelas.entries()) {
+      const sedes = (escuela.get("campuses") || []).map((c) => c.id);
+      const elegidas = pedidas[i].campusIds;
+      if (elegidas.some((c) => !sedes.includes(c))) {
+        return error(res, 400, "campus-not-found", MENSAJES["campus-not-found"]);
+      }
+      // Si la institución tiene sedes, el docente dice en cuál(es) trabaja.
+      if (sedes.length && !elegidas.length) {
+        return error(res, 400, "campus-required", `Elige al menos una sede de ${escuela.get("name") ?? escuela.id}.`);
+      }
+    }
+
+    usuario = await getAuth().createUser({
       email,
       password: req.body.password,
       displayName: fullName,
@@ -81,12 +178,17 @@ exports.register = onRequest(opciones, async (req, res) => {
       email,
       fullName,
       rol: ROL_INICIAL,
+      activo: true,
+      schoolIds: pedidas.map((p) => p.schoolId),
+      // Sedes por institución: { [schoolId]: [campusId, ...] }.
+      campusIds: Object.fromEntries(pedidas.map((p) => [p.schoolId, p.campusIds])),
       createdAt: new Date().toISOString(),
     };
     await getFirestore().collection("users").doc(usuario.uid).set(perfil);
 
     const customToken = await getAuth().createCustomToken(usuario.uid, { rol: ROL_INICIAL });
-    return responder(res, 201, { uid: usuario.uid, rol: ROL_INICIAL, customToken });
+    const welcomeEmailSent = await enviarBienvenida(email, fullName, escuelas, pedidas);
+    return responder(res, 201, { uid: usuario.uid, rol: ROL_INICIAL, customToken, welcomeEmailSent });
   } catch (e) {
     const mapa = {
       "auth/email-already-exists": ["email-already-in-use", 409],
@@ -94,7 +196,14 @@ exports.register = onRequest(opciones, async (req, res) => {
       "auth/invalid-password": ["weak-password", 400],
     };
     const [code, estado] = mapa[e.code] || ["internal", 500];
-    if (code === "internal") logger.error(`register falló: code=${e.code} message=${e.message}`);
+    if (code === "internal") {
+      logger.error(`register falló: code=${e.code} message=${e.message}`);
+      // Si la cuenta alcanzó a crearse pero el perfil no, se borra para que el correo quede libre.
+      if (usuario) {
+        await getAuth().deleteUser(usuario.uid).catch((err) =>
+          logger.error(`register: no se pudo deshacer la cuenta ${usuario.uid}: ${err.message}`));
+      }
+    }
     return error(res, estado, code, MENSAJES[code]);
   }
 });
@@ -142,8 +251,14 @@ exports.login = onRequest(opciones, async (req, res) => {
         email: datos.email,
         fullName: datos.displayName || datos.email.split("@")[0],
         rol: ROL_INICIAL,
+        activo: true,
         createdAt: new Date().toISOString(),
       });
+    }
+
+    // Los perfiles sin el campo se consideran activos; solo false bloquea la entrada.
+    if (perfil.exists && perfil.get("activo") === false) {
+      return error(res, 403, "user-disabled", MENSAJES["user-disabled"]);
     }
 
     const rol = perfil.exists ? perfil.get("rol") || ROL_INICIAL : ROL_INICIAL;
