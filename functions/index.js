@@ -130,24 +130,29 @@ exports.login = onRequest(opciones, async (req, res) => {
     return error(res, 500, "internal", MENSAJES.internal);
   }
 
-  const uid = datos.localId;
-  const perfilRef = getFirestore().collection("users").doc(uid);
-  const perfil = await perfilRef.get();
+  try {
+    const uid = datos.localId;
+    const perfilRef = getFirestore().collection("users").doc(uid);
+    const perfil = await perfilRef.get();
 
-  // Cuentas creadas antes de este backend pueden no tener perfil todavía.
-  if (!perfil.exists) {
-    await perfilRef.set({
-      uid,
-      email: datos.email,
-      fullName: datos.displayName || datos.email.split("@")[0],
-      rol: ROL_INICIAL,
-      createdAt: new Date().toISOString(),
-    });
+    // Cuentas creadas antes de este backend pueden no tener perfil todavía.
+    if (!perfil.exists) {
+      await perfilRef.set({
+        uid,
+        email: datos.email,
+        fullName: datos.displayName || datos.email.split("@")[0],
+        rol: ROL_INICIAL,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    const rol = perfil.exists ? perfil.get("rol") || ROL_INICIAL : ROL_INICIAL;
+    const customToken = await getAuth().createCustomToken(uid, { rol });
+    return responder(res, 200, { uid, rol, customToken });
+  } catch (e) {
+    logger.error("login: no se pudo abrir la sesión", { code: e.code });
+    return error(res, 500, "internal", MENSAJES.internal);
   }
-
-  const rol = perfil.get("rol") || ROL_INICIAL;
-  const customToken = await getAuth().createCustomToken(uid, { rol });
-  return responder(res, 200, { uid, rol, customToken });
 });
 
 const estudiantes = require("./estudiantes");
@@ -155,6 +160,34 @@ const estudiantes = require("./estudiantes");
 exports.students = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   estudiantes,
+);
+
+const grupos = require("./grupos");
+
+exports.groups = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  grupos,
+);
+
+const profesores = require("./profesores");
+
+exports.teachers = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  profesores,
+);
+
+const instituciones = require("./instituciones");
+
+exports.schools = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  instituciones,
+);
+
+const agrupaciones = require("./agrupaciones");
+
+exports.groupings = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  agrupaciones,
 );
 
 const appOpens = require("./appOpens");
