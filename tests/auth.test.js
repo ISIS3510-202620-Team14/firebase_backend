@@ -15,6 +15,12 @@ const {
   doc,
   getDoc,
   updateDoc,
+  collection,
+  addDoc,
+  serverTimestamp,
+  query,
+  where,
+  getCountFromServer,
 } = require("firebase/firestore");
 
 const BASE = "http://127.0.0.1:5001/enad-movil/us-central1";
@@ -128,6 +134,32 @@ test("el usuario sí puede corregir su nombre", async () => {
   await updateDoc(doc(db, "users", uid), { fullName: "Ana R." });
   const perfil = await getDoc(doc(db, "users", uid));
   assert.strictEqual(perfil.data().fullName, "Ana R.");
+});
+
+test("la BQ cuenta actividades de biblioteca y propias del docente", async () => {
+  const eventos = collection(db, "events");
+  for (const source of ["library", "custom"]) {
+    await addDoc(eventos, {
+      teacherId: uid,
+      name: "activity_selected",
+      source,
+      platform: "flutter",
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  const contar = async (source) => {
+    const consulta = query(
+      eventos,
+      where("teacherId", "==", uid),
+      where("name", "==", "activity_selected"),
+      where("source", "==", source),
+    );
+    return (await getCountFromServer(consulta)).data().count;
+  };
+
+  assert.strictEqual(await contar("library"), 1);
+  assert.strictEqual(await contar("custom"), 1);
 });
 
 test("el usuario no puede leer el perfil de otro", async () => {
