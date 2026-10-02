@@ -41,14 +41,22 @@ function textoValido(valor, max) {
     return limpio.length >= 2 && limpio.length <= max && slug(limpio) ? limpio : null;
 }
 
+// Coordenadas de una sede: las dos o ninguna. undefined si no vienen, null si son inválidas.
+function coordenadasDesde(valor) {
+    const { lat, lng } = valor ?? {};
+    if (lat === undefined && lng === undefined) return undefined;
+    const validas = typeof lat === "number" && typeof lng === "number" && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+    return validas ? { lat, lng} : null;
+}
 // ["Antonia Santos", ...] -> [{ id, name }]. Devuelve null si hay una sede inválida o repetida.
 function sedesDesde(lista) {
     if (!Array.isArray(lista) || lista.length > MAX_SEDES) return null;
     const sedes = [];
-    for (const nombre of lista) {
-        const name = textoValido(nombre, 80);
-        if (!name || sedes.some((s) => s.id === slug(name))) return null;
-        sedes.push({ id: slug(name), name });
+    for (const item of lista) {
+        const name = textoValido(typeof item === "string" ? item : item?.name, 80);
+        const coordenadas = typeof item === "string" ? undefined : coordenadasDesde(item);
+        if (!name || coordenadas === null || sedes.some((s) => s.id === slug(name))) return null;
+        sedes.push({ id: slug(name), name, ...coordenadas });
     }
     return sedes;
 }
@@ -233,14 +241,15 @@ app.delete("/:id", soloAdmin, async (req, res) => {
 app.post("/:id/campuses", soloAdmin, async (req, res) => {
     const doc = await cargarEscuela(req);
     const name = textoValido(req.body?.name, 80);
-    if (!name) throw invalido(["name"]);
+    const coordenadas = coordenadasDesde(req.body);
+    if (!name || coordenadas === null) throw invalido(coordenadas === null ? ["lat", "lng"] : ["name"]);
 
     await db().runTransaction(async (tx) => {
         const actual = await tx.get(doc.ref);
         const sedes = actual.get("campuses") || [];
         if (sedes.some((s) => s.id === slug(name))) throw new ErrorApi(409, "already-exists", "Esa sede ya existe en la institución.");
         if (sedes.length >= MAX_SEDES) throw new ErrorApi(400, "invalid-argument", `Una institución no puede tener más de ${MAX_SEDES} sedes.`);
-        tx.update(doc.ref, { campuses: [...sedes, { id: slug(name), name }], updatedAt: new Date().toISOString() });
+        tx.update(doc.ref, { campuses: [...sedes, { id: slug(name), name, ...coordenadas }], updatedAt: new Date().toISOString() });
     });
     res.status(201).json(aRespuesta(await doc.ref.get()));
 });
@@ -262,6 +271,24 @@ app.delete("/:id/campuses/:campusId", soloAdmin, async (req, res) => {
         const actual = await tx.get(doc.ref);
         const sedes = (actual.get("campuses") || []).filter((s) => s.id !== sede.id);
         tx.update(doc.ref, { campuses: sedes, updatedAt: new Date().toISOString() });
+    });
+    res.status(200).json(aRespuesta(await doc.ref.get()));
+});
+
+//ubicar sede: el admin registra o corrige sus coordenadas (la app las usa para sugerir la sede del día)
+app.patch("/:id/campuses/:campusId", soloAdmin, async (req, res) => {
+    const doc = await cargarEscuela(req);
+    const coordenadas = coordenadasDesde(req.body);
+    if(!coordenadas) throw invalido(["lat", "lng"]);
+
+    await db().runTransaction(async (tx) => {
+        const actual = await tx.get(doc.ref);
+        const sedes = actual.get("campuses") || [];
+        if(!sedes.some((s) => s.id === req.params.campusId)) throw new ErrorApi(404, "not-found", "No encontramos esa sede.");
+        tx.update(doc.ref, {
+            campuses: sedes.map((s) => (s.id === req.params.campusId ? { ...s, ...coordenadas} : s)),
+            updatedAt: new Date().toISOString()
+        });
     });
     res.status(200).json(aRespuesta(await doc.ref.get()));
 });
