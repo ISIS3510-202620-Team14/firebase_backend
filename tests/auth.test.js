@@ -141,3 +141,12 @@ test("el usuario no puede leer el perfil de otro", async () => {
     /permission|PERMISSION_DENIED/i,
   );
 });
+
+ test("el usuario no puede cambiar sus colegios", async () => {
+  for (const campo of ["schoolId", "schoolIds"]) {
+    await assert.rejects(
+      () => updateDoc(doc(db, "users", uid), { [campo]: campo === "schoolId" ? "otro" : ["otro"] }),
+      /permission|PERMISSION_DENIED/i,
+    );
+  }
+});
