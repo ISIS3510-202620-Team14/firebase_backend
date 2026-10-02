@@ -23,7 +23,7 @@ function soloAdmin(req, res, next) {
     next();
 }
 
-// "IE Sagrada Familia" -> "ie-sagrada-familia". Sirve para el id y para comparar nombres sin tildes ni mayúsculas.
+// "IE Sagrada Familia" -> "ie-sagrada-familia". Sirve para el id de las sedes y para comparar nombres sin tildes ni mayúsculas.
 function slug(texto) {
     return String(texto ?? "")
         .normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -115,12 +115,18 @@ async function docentesDe(schoolId) {
 
 const contar = async (consulta) => (await consulta.count().get()).data().count;
 
-// Otra institución activa con el mismo nombre en el mismo municipio.
-async function nombreOcupado(name, municipality, excluirId) {
+// Otra institución con el mismo nombre en el mismo municipio (activa o dada de baja), o undefined.
+async function mismoNombre(name, municipality, excluirId) {
     const clave = `${slug(name)}|${slug(municipality)}`;
     const todas = await coleccion().get();
-    return todas.docs.some((d) => d.id !== excluirId && d.get("active") !== false
+    return todas.docs.find((d) => d.id !== excluirId
         && `${slug(d.get("name"))}|${slug(d.get("municipality"))}` === clave);
+}
+
+// Otra institución activa con el mismo nombre en el mismo municipio.
+async function nombreOcupado(name, municipality, excluirId) {
+    const otra = await mismoNombre(name, municipality, excluirId);
+    return Boolean(otra) && otra.get("active") !== false;
 }
 
 //listar: el admin ve todas (con filtros); el docente solo las suyas
@@ -148,29 +154,27 @@ app.get("/", async (req, res) => {
     res.status(200).json({ schools });
 });
 
-//crear: el id sale de nombre + municipio, así que dos iguales chocan solas
+//crear: el id lo genera Firestore; los nombres repetidos en el mismo municipio se revisan aparte
 app.post("/", soloAdmin, async (req, res) => {
     const { datos, invalidos } = validarEscuela(req.body);
     if (invalidos.length) throw invalido(invalidos);
 
-    const ahora = new Date().toISOString();
-    const ref = coleccion().doc(`${slug(datos.name)}-${slug(datos.municipality)}`);
+    const previa = await mismoNombre(datos.name, datos.municipality);
+    if (previa) {
+        throw new ErrorApi(409, "already-exists", previa.get("active") === false
+            ? "Esa institución existe pero está dada de baja."
+            : "Ya existe una institución con ese nombre en ese municipio.");
+    }
 
-    await db().runTransaction(async (tx) => {
-        const previa = await tx.get(ref);
-        if (previa.exists) {
-            throw new ErrorApi(409, "already-exists", previa.get("active") === false
-                ? "Esa institución existe pero está dada de baja."
-                : "Ya existe una institución con ese nombre en ese municipio.");
-        }
-        tx.set(ref, {
-            zone: null, enadStage: 1, campuses: [],
-            ...datos,
-            active: true,
-            createdBy: req.usuario.uid,
-            createdAt: ahora,
-            updatedAt: ahora
-        });
+    const ahora = new Date().toISOString();
+    const ref = coleccion().doc();
+    await ref.set({
+        zone: null, enadStage: 1, campuses: [],
+        ...datos,
+        active: true,
+        createdBy: req.usuario.uid,
+        createdAt: ahora,
+        updatedAt: ahora
     });
     res.status(201).json(aRespuesta(await ref.get()));
 });
