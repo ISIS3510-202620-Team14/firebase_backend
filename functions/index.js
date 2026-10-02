@@ -4,6 +4,8 @@ const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore } = require("firebase-admin/firestore");
+const { enviarCorreo, BREVO_API_KEY } = require("./correo/brevo");
+const { armarBienvenida } = require("./correo/bienvenida");
 
 initializeApp();
 
@@ -113,8 +115,22 @@ function escuelasPedidas(body) {
   return [...porEscuela].map(([schoolId, campusIds]) => ({ schoolId, campusIds }));
 }
 
+// Avisa por correo que la cuenta quedó creada. Devuelve si Brevo lo aceptó; nunca lanza.
+function enviarBienvenida(email, fullName, escuelas, pedidas) {
+  const instituciones = escuelas.map((escuela, i) => {
+    const sedes = escuela.get("campuses") || [];
+    return {
+      nombre: escuela.get("name") ?? escuela.id,
+      sedes: pedidas[i].campusIds.map((id) => sedes.find((c) => c.id === id)?.name ?? id),
+    };
+  });
+  const { asunto, html, texto } = armarBienvenida({ nombre: fullName, instituciones });
+  return enviarCorreo({ para: email, nombre: fullName, asunto, html, texto });
+}
+
 // Crea la cuenta en Firebase Auth, su perfil activo con rol inicial y escuelas, y devuelve el token.
-exports.register = onRequest(opciones, async (req, res) => {
+// Al final envía el correo de bienvenida; si no sale, la cuenta igual queda creada.
+exports.register = onRequest({ ...opciones, secrets: [BREVO_API_KEY] }, async (req, res) => {
   if (req.method !== "POST") return error(res, 405, "invalid-argument", MENSAJES["invalid-argument"]);
 
   const vacios = faltantes(req.body, ["email", "password", "fullName"]);
@@ -168,7 +184,8 @@ exports.register = onRequest(opciones, async (req, res) => {
     await getFirestore().collection("users").doc(usuario.uid).set(perfil);
 
     const customToken = await getAuth().createCustomToken(usuario.uid, { rol: ROL_INICIAL });
-    return responder(res, 201, { uid: usuario.uid, rol: ROL_INICIAL, customToken });
+    const welcomeEmailSent = await enviarBienvenida(email, fullName, escuelas, pedidas);
+    return responder(res, 201, { uid: usuario.uid, rol: ROL_INICIAL, customToken, welcomeEmailSent });
   } catch (e) {
     const mapa = {
       "auth/email-already-exists": ["email-already-in-use", 409],

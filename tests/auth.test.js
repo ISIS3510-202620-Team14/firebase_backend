@@ -166,6 +166,8 @@ test("register crea la cuenta activa con rol docente", async () => {
   assert.strictEqual(estado, 201);
   assert.strictEqual(datos.rol, "docente");
   assert.ok(datos.customToken);
+  // En el emulador no hay clave de Brevo: el correo no sale, pero la cuenta sí se crea.
+  assert.strictEqual(datos.welcomeEmailSent, false);
   uid = datos.uid;
 });
 
