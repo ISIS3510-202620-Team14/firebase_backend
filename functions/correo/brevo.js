@@ -13,8 +13,9 @@ const TIEMPO_MAXIMO_MS = 10 * 1000;
 // Envía un correo transaccional. Nunca lanza: devuelve true si Brevo lo aceptó y false si no,
 // para que quien lo llama decida qué hacer sin romper su propio flujo.
 async function enviarCorreo({ para, nombre, asunto, html, texto }) {
-  const clave = BREVO_API_KEY.value();
-  const remitente = CORREO_REMITENTE.value();
+  // Al pegar la clave en la terminal es fácil que se cuele un espacio o un salto de línea.
+  const clave = BREVO_API_KEY.value().trim();
+  const remitente = CORREO_REMITENTE.value().trim();
   if (!clave || !remitente) {
     logger.warn("correo: falta BREVO_API_KEY o CORREO_REMITENTE, no se envía");
     return false;
