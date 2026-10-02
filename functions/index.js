@@ -12,6 +12,9 @@ const WEB_API_KEY = defineString("WEB_API_KEY");
 // Rol con el que nace toda cuenta. Cambiarlo es tarea de un administrador.
 const ROL_INICIAL = "docente";
 
+// Un docente puede trabajar en varias escuelas; este es el tope al registrarse.
+const MAX_ESCUELAS = 10;
+
 const opciones = { region: "us-central1", cors: true };
 
 // Con el emulador de Auth encendido, Identity Toolkit vive en el host local.
@@ -54,12 +57,13 @@ const MENSAJES = {
   "email-already-in-use": "Ya existe una cuenta con ese correo.",
   "weak-password": "La contraseña debe tener al menos 6 caracteres.",
   "invalid-argument": "Faltan datos obligatorios.",
-  "school-not-found": "La escuela elegida no existe.",
+  "school-not-found": "Alguna de las escuelas elegidas no existe.",
+  "campus-not-found": "Alguna de las sedes elegidas no pertenece a su institución.",
   internal: "No pudimos completar la operación. Intenta de nuevo.",
 };
 
-// Escuelas que se pueden elegir al registrarse. Es pública porque aún no hay sesión;
-// solo expone id, nombre y municipio.
+// Escuelas que se pueden elegir al registrarse, con sus sedes. Es pública porque aún no hay sesión;
+// solo expone id, nombre, municipio y sedes.
 exports.registerSchools = onRequest(opciones, async (req, res) => {
   if (req.method !== "GET") return error(res, 405, "invalid-argument", MENSAJES["invalid-argument"]);
 
@@ -67,7 +71,15 @@ exports.registerSchools = onRequest(opciones, async (req, res) => {
     const todas = await getFirestore().collection("schools").get();
     const schools = todas.docs
       .filter((d) => d.get("active") !== false)
-      .map((d) => ({ id: d.id, name: d.get("name") ?? d.id, municipality: d.get("municipality") ?? null }))
+      .map((d) => ({
+        id: d.id,
+        name: d.get("name") ?? d.id,
+        municipality: d.get("municipality") ?? null,
+        // Las sedes sin id o nombre (cargadas a mano incompletas) no se pueden elegir.
+        campuses: (d.get("campuses") || [])
+          .filter((c) => textoNoVacio(c?.id) && textoNoVacio(c?.name))
+          .map((c) => ({ id: c.id, name: c.name })),
+      }))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
     return responder(res, 200, { schools });
   } catch (e) {
@@ -76,27 +88,67 @@ exports.registerSchools = onRequest(opciones, async (req, res) => {
   }
 });
 
-// Crea la cuenta en Firebase Auth, su perfil activo con rol inicial y escuela, y devuelve el token.
+const textoNoVacio = (v) => typeof v === "string" && v.trim() !== "";
+
+// Escuelas y sedes pedidas en el registro: schools [{ schoolId, campusIds }], o las formas viejas
+// schoolIds (lista) / schoolId (una sola) sin sedes. Devuelve [{ schoolId, campusIds }] sin repetidos,
+// o null si el formato no sirve.
+function escuelasPedidas(body) {
+  let lista;
+  if (Array.isArray(body?.schools)) {
+    lista = body.schools;
+  } else {
+    const ids = Array.isArray(body?.schoolIds) ? body.schoolIds : [body?.schoolId];
+    lista = ids.map((schoolId) => ({ schoolId, campusIds: [] }));
+  }
+
+  const porEscuela = new Map();
+  for (const item of lista) {
+    const campusIds = item?.campusIds ?? [];
+    if (!textoNoVacio(item?.schoolId) || !Array.isArray(campusIds) || !campusIds.every(textoNoVacio)) return null;
+    const previas = porEscuela.get(item.schoolId.trim()) || [];
+    porEscuela.set(item.schoolId.trim(), [...new Set([...previas, ...campusIds.map((c) => c.trim())])]);
+  }
+  if (!porEscuela.size || porEscuela.size > MAX_ESCUELAS) return null;
+  return [...porEscuela].map(([schoolId, campusIds]) => ({ schoolId, campusIds }));
+}
+
+// Crea la cuenta en Firebase Auth, su perfil activo con rol inicial y escuelas, y devuelve el token.
 exports.register = onRequest(opciones, async (req, res) => {
   if (req.method !== "POST") return error(res, 405, "invalid-argument", MENSAJES["invalid-argument"]);
 
-  const vacios = faltantes(req.body, ["email", "password", "fullName", "schoolId"]);
+  const vacios = faltantes(req.body, ["email", "password", "fullName"]);
+  const pedidas = escuelasPedidas(req.body);
+  if (!pedidas) vacios.push("schools");
   if (vacios.length) {
     return error(res, 400, "invalid-argument", `Faltan estos campos: ${vacios.join(", ")}.`);
   }
 
   const email = req.body.email.trim();
   const fullName = req.body.fullName.trim();
-  const schoolId = req.body.schoolId.trim();
 
+  let usuario;
   try {
-    // Se revisa antes de crear la cuenta para no dejar usuarios sin escuela.
-    const escuela = await getFirestore().collection("schools").doc(schoolId).get();
-    if (!escuela.exists || escuela.get("active") === false) {
+    // Se revisa antes de crear la cuenta para no dejar usuarios sin escuela o con sedes ajenas.
+    const escuelas = await getFirestore().getAll(
+      ...pedidas.map((p) => getFirestore().collection("schools").doc(p.schoolId)),
+    );
+    if (escuelas.some((e) => !e.exists || e.get("active") === false)) {
       return error(res, 400, "school-not-found", MENSAJES["school-not-found"]);
     }
+    for (const [i, escuela] of escuelas.entries()) {
+      const sedes = (escuela.get("campuses") || []).map((c) => c.id);
+      const elegidas = pedidas[i].campusIds;
+      if (elegidas.some((c) => !sedes.includes(c))) {
+        return error(res, 400, "campus-not-found", MENSAJES["campus-not-found"]);
+      }
+      // Si la institución tiene sedes, el docente dice en cuál(es) trabaja.
+      if (sedes.length && !elegidas.length) {
+        return error(res, 400, "campus-required", `Elige al menos una sede de ${escuela.get("name") ?? escuela.id}.`);
+      }
+    }
 
-    const usuario = await getAuth().createUser({
+    usuario = await getAuth().createUser({
       email,
       password: req.body.password,
       displayName: fullName,
@@ -108,7 +160,9 @@ exports.register = onRequest(opciones, async (req, res) => {
       fullName,
       rol: ROL_INICIAL,
       activo: true,
-      schoolIds: [schoolId],
+      schoolIds: pedidas.map((p) => p.schoolId),
+      // Sedes por institución: { [schoolId]: [campusId, ...] }.
+      campusIds: Object.fromEntries(pedidas.map((p) => [p.schoolId, p.campusIds])),
       createdAt: new Date().toISOString(),
     };
     await getFirestore().collection("users").doc(usuario.uid).set(perfil);
@@ -122,7 +176,14 @@ exports.register = onRequest(opciones, async (req, res) => {
       "auth/invalid-password": ["weak-password", 400],
     };
     const [code, estado] = mapa[e.code] || ["internal", 500];
-    if (code === "internal") logger.error(`register falló: code=${e.code} message=${e.message}`);
+    if (code === "internal") {
+      logger.error(`register falló: code=${e.code} message=${e.message}`);
+      // Si la cuenta alcanzó a crearse pero el perfil no, se borra para que el correo quede libre.
+      if (usuario) {
+        await getAuth().deleteUser(usuario.uid).catch((err) =>
+          logger.error(`register: no se pudo deshacer la cuenta ${usuario.uid}: ${err.message}`));
+      }
+    }
     return error(res, estado, code, MENSAJES[code]);
   }
 });

@@ -22,6 +22,7 @@ const BASE = "http://127.0.0.1:5001/enad-movil/us-central1";
 const correo = `ana.${Date.now()}@enad.test`;
 const clave = "clave-segura-123";
 const escuela = `ie-prueba-${Date.now()}`;
+const otraEscuela = `ie-prueba-2-${Date.now()}`;
 
 let app, auth, db, entorno;
 
@@ -41,9 +42,15 @@ before(async () => {
     projectId: "enad-movil",
     firestore: { host: "127.0.0.1", port: 8080 },
   });
-  await comoAdmin((fs) =>
-    fs.collection("schools").doc(escuela).set({ name: "IE Prueba", municipality: "Pereira", active: true }),
-  );
+  await comoAdmin(async (fs) => {
+    await fs.collection("schools").doc(escuela).set({ name: "IE Prueba", municipality: "Pereira", active: true });
+    await fs.collection("schools").doc(otraEscuela).set({
+      name: "IE Prueba Dos",
+      municipality: "Apía",
+      active: true,
+      campuses: [{ id: "sede-centro", name: "Sede Centro" }, { id: "sede-rural", name: "Sede Rural" }],
+    });
+  });
 });
 
 after(async () => {
@@ -67,6 +74,8 @@ test("registerSchools lista las escuelas activas", async () => {
   assert.strictEqual(res.status, 200);
   const { schools } = await res.json();
   assert.ok(schools.some((s) => s.id === escuela && s.name === "IE Prueba"));
+  const conSedes = schools.find((s) => s.id === otraEscuela);
+  assert.deepStrictEqual(conSedes.campuses.map((c) => c.id), ["sede-centro", "sede-rural"]);
 });
 
 test("register rechaza una escuela que no existe", async () => {
@@ -78,6 +87,73 @@ test("register rechaza una escuela que no existe", async () => {
   });
   assert.strictEqual(estado, 400);
   assert.strictEqual(datos.error.code, "school-not-found");
+});
+
+test("register guarda varias instituciones con sus sedes, sin repetir", async () => {
+  const { estado, datos } = await llamar("register", {
+    email: `varias.${Date.now()}@enad.test`,
+    password: clave,
+    fullName: "Docente Rural",
+    schools: [
+      { schoolId: escuela, campusIds: [] },
+      { schoolId: otraEscuela, campusIds: ["sede-centro", "sede-rural", "sede-centro"] },
+    ],
+  });
+  assert.strictEqual(estado, 201, JSON.stringify(datos));
+  await comoAdmin(async (fs) => {
+    const perfil = await fs.collection("users").doc(datos.uid).get();
+    assert.deepStrictEqual(perfil.get("schoolIds"), [escuela, otraEscuela]);
+    assert.deepStrictEqual(perfil.get("campusIds"), { [escuela]: [], [otraEscuela]: ["sede-centro", "sede-rural"] });
+  });
+});
+
+test("register pide al menos una sede si la institución tiene sedes", async () => {
+  const { estado, datos } = await llamar("register", {
+    email: `sinsede.${Date.now()}@enad.test`,
+    password: clave,
+    fullName: "Sin Sede",
+    schools: [{ schoolId: otraEscuela, campusIds: [] }],
+  });
+  assert.strictEqual(estado, 400);
+  assert.strictEqual(datos.error.code, "campus-required");
+});
+
+test("register rechaza una sede que no es de esa institución", async () => {
+  const { estado, datos } = await llamar("register", {
+    email: `sedeajena.${Date.now()}@enad.test`,
+    password: clave,
+    fullName: "Sede Ajena",
+    schools: [{ schoolId: otraEscuela, campusIds: ["sede-de-otro-lado"] }],
+  });
+  assert.strictEqual(estado, 400);
+  assert.strictEqual(datos.error.code, "campus-not-found");
+});
+
+test("register rechaza la lista si una de las escuelas no existe", async () => {
+  const correoMalo = `mezcla.${Date.now()}@enad.test`;
+  const { estado, datos } = await llamar("register", {
+    email: correoMalo,
+    password: clave,
+    fullName: "Mezcla",
+    schoolIds: [escuela, "no-existe"],
+  });
+  assert.strictEqual(estado, 400);
+  assert.strictEqual(datos.error.code, "school-not-found");
+
+  // No quedó una cuenta a medias: el correo sigue libre.
+  const otra = await llamar("register", { email: correoMalo, password: clave, fullName: "Mezcla", schoolIds: [escuela] });
+  assert.strictEqual(otra.estado, 201);
+});
+
+test("register rechaza una lista de escuelas vacía", async () => {
+  const { estado, datos } = await llamar("register", {
+    email: `vacia.${Date.now()}@enad.test`,
+    password: clave,
+    fullName: "Sin Escuelas",
+    schoolIds: [],
+  });
+  assert.strictEqual(estado, 400);
+  assert.strictEqual(datos.error.code, "invalid-argument");
 });
 
 test("register crea la cuenta activa con rol docente", async () => {
