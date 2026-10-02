@@ -16,6 +16,8 @@ async function autenticar(req, res, next) {
     }
 
     const perfil = await getFirestore().collection("users").doc(uid).get();
+    // Una cuenta desactivada pierde el acceso aunque su token siga vigente.
+    if (perfil.get("activo") === false) throw new ErrorApi(403, "user-disabled");
     const rol = perfil.get("rol");
     // Un docente puede trabajar en varias escuelas. Los perfiles viejos traen un solo schoolId.
     const antiguo = perfil.get("schoolId");

@@ -9,8 +9,8 @@ initializeApp();
 
 const WEB_API_KEY = defineString("WEB_API_KEY");
 
-// Rol con el que nace toda cuenta. Subirlo de nivel es tarea de un administrador.
-const ROL_INICIAL = "sin_privilegios";
+// Rol con el que nace toda cuenta. Cambiarlo es tarea de un administrador.
+const ROL_INICIAL = "docente";
 
 const opciones = { region: "us-central1", cors: true };
 
@@ -54,22 +54,48 @@ const MENSAJES = {
   "email-already-in-use": "Ya existe una cuenta con ese correo.",
   "weak-password": "La contraseña debe tener al menos 6 caracteres.",
   "invalid-argument": "Faltan datos obligatorios.",
+  "school-not-found": "La escuela elegida no existe.",
   internal: "No pudimos completar la operación. Intenta de nuevo.",
 };
 
-// Crea la cuenta en Firebase Auth, su perfil con rol inicial y devuelve el token.
+// Escuelas que se pueden elegir al registrarse. Es pública porque aún no hay sesión;
+// solo expone id, nombre y municipio.
+exports.registerSchools = onRequest(opciones, async (req, res) => {
+  if (req.method !== "GET") return error(res, 405, "invalid-argument", MENSAJES["invalid-argument"]);
+
+  try {
+    const todas = await getFirestore().collection("schools").get();
+    const schools = todas.docs
+      .filter((d) => d.get("active") !== false)
+      .map((d) => ({ id: d.id, name: d.get("name") ?? d.id, municipality: d.get("municipality") ?? null }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    return responder(res, 200, { schools });
+  } catch (e) {
+    logger.error(`registerSchools falló: ${e.message}`);
+    return error(res, 500, "internal", MENSAJES.internal);
+  }
+});
+
+// Crea la cuenta en Firebase Auth, su perfil activo con rol inicial y escuela, y devuelve el token.
 exports.register = onRequest(opciones, async (req, res) => {
   if (req.method !== "POST") return error(res, 405, "invalid-argument", MENSAJES["invalid-argument"]);
 
-  const vacios = faltantes(req.body, ["email", "password", "fullName"]);
+  const vacios = faltantes(req.body, ["email", "password", "fullName", "schoolId"]);
   if (vacios.length) {
     return error(res, 400, "invalid-argument", `Faltan estos campos: ${vacios.join(", ")}.`);
   }
 
   const email = req.body.email.trim();
   const fullName = req.body.fullName.trim();
+  const schoolId = req.body.schoolId.trim();
 
   try {
+    // Se revisa antes de crear la cuenta para no dejar usuarios sin escuela.
+    const escuela = await getFirestore().collection("schools").doc(schoolId).get();
+    if (!escuela.exists || escuela.get("active") === false) {
+      return error(res, 400, "school-not-found", MENSAJES["school-not-found"]);
+    }
+
     const usuario = await getAuth().createUser({
       email,
       password: req.body.password,
@@ -81,6 +107,8 @@ exports.register = onRequest(opciones, async (req, res) => {
       email,
       fullName,
       rol: ROL_INICIAL,
+      activo: true,
+      schoolIds: [schoolId],
       createdAt: new Date().toISOString(),
     };
     await getFirestore().collection("users").doc(usuario.uid).set(perfil);
@@ -142,8 +170,14 @@ exports.login = onRequest(opciones, async (req, res) => {
         email: datos.email,
         fullName: datos.displayName || datos.email.split("@")[0],
         rol: ROL_INICIAL,
+        activo: true,
         createdAt: new Date().toISOString(),
       });
+    }
+
+    // Los perfiles sin el campo se consideran activos; solo false bloquea la entrada.
+    if (perfil.exists && perfil.get("activo") === false) {
+      return error(res, 403, "user-disabled", MENSAJES["user-disabled"]);
     }
 
     const rol = perfil.exists ? perfil.get("rol") || ROL_INICIAL : ROL_INICIAL;
