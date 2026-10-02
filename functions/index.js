@@ -162,6 +162,13 @@ exports.students = onRequest(
   estudiantes,
 );
 
+const appOpens = require("./appOpens");
+
+exports.appOpens = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  appOpens,
+);
+
 const grupos = require("./grupos");
 
 exports.groups = onRequest(
