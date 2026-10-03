@@ -6,12 +6,16 @@ service cloud.firestore {
     // Perfil: uno por usuario, con el id igual a su uid de Auth.
     // Solo el backend (Admin SDK) crea y borra perfiles; el cliente nunca.
     match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null
+                    && request.auth.uid == userId;
 
       // El usuario puede corregir su nombre, pero no tocar uid, email ni rol.
       allow update: if request.auth != null
                     && request.auth.uid == userId
-                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName'])
+                    && request.resource.data
+                        .diff(resource.data)
+                        .affectedKeys()
+                        .hasOnly(['fullName'])
                     && request.resource.data.fullName is string
                     && request.resource.data.fullName.size() > 0;
 
@@ -24,16 +28,37 @@ service cloud.firestore {
       }
     }
 
-    // Eventos de analitica. El cliente solo puede crear eventos propios y
-    // leer los suyos (BQ tipo 2). Nadie los edita ni los borra desde la app.
+    // Eventos de analítica.
+    //
+    // Cada usuario:
+    // - puede crear únicamente eventos propios;
+    // - puede leer únicamente sus propios eventos;
+    // - no puede editar ni eliminar eventos.
+    //
+    // Para BQ 4 usamos:
+    //   name   = "activity_selected"
+    //   source = "library" | "custom"
+    //
+    // Flutter y Kotlin pueden registrar eventos.
     match /events/{eventId} {
+
       allow create: if request.auth != null
                     && request.resource.data.teacherId == request.auth.uid
-                    && request.resource.data.name is string
-                    && request.resource.data.platform in ['flutter', 'kotlin']
+                    && request.resource.data.name == "activity_selected"
+                    && request.resource.data.source in [
+                      "library",
+                      "custom"
+                    ]
+                    && request.resource.data.platform in [
+                      "flutter",
+                      "kotlin"
+                    ]
                     && request.resource.data.createdAt == request.time;
+
       allow read: if request.auth != null
-                  && resource.data.teacherId == request.auth.uid;
+                  && resource.data.teacherId == request.auth.uid
+                  && resource.data.name == "activity_selected";
+
       allow update, delete: if false;
     }
 
