@@ -56,7 +56,7 @@ app.get("/grouping-events", async (req, res) => {
     res.status(200).json({ events });
 });
 
-// BQ #11 (Type 4): Most used activity 
+// BQ #11 (Type 4): Top activity.
 app.get("/top-activities", async (req, res) => {
     if (req.usuario.rol !== "admin") throw new ErrorApi(403, "permission-denied");
 
