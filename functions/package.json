@@ -6,7 +6,8 @@
     "node": "22"
   },
   "scripts": {
-    "serve": "firebase emulators:start --only auth,firestore,functions"
+    "serve": "firebase emulators:start --only auth,firestore,functions",
+    "sembrar": "node scripts/sembrar-emulador.js"
   },
   "dependencies": {
     "express": "^5.2.1",
