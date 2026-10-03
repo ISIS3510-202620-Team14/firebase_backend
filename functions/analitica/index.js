@@ -56,5 +56,32 @@ app.get("/grouping-events", async (req, res) => {
     res.status(200).json({ events });
 });
 
+// BQ #11 (Type 4): Top activity.
+app.get("/top-activities", async (req, res) => {
+    if (req.usuario.rol !== "admin") throw new ErrorApi(403, "permission-denied");
+
+    const snap = await getFirestore()
+        .collection("events")
+        .where("name", "==", "activity_selected")
+        .limit(2000)
+        .get();
+
+    const porTitulo = new Map();
+    snap.docs.forEach((doc) => {
+        const d = doc.data();
+        const titulo = d.title || "Actividad sin título";
+        const fila = porTitulo.get(titulo) || { title: titulo, subject: d.subject || null, count: 0 };
+        fila.count++;
+        porTitulo.set(titulo, fila);
+    });
+
+    const total = snap.size;
+    const activities = [...porTitulo.values()]
+        .sort((a, b) => b.count - a.count)
+        .map((fila) => ({ ...fila, percentage: total ? Math.round((fila.count * 1000) / total) / 10 : null }));
+
+    res.status(200).json({ total, activities });
+});
+
 app.use(manejarErrores);
 module.exports = app;
