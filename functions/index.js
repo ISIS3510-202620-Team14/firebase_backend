@@ -312,6 +312,13 @@ exports.groupings = onRequest(
   agrupaciones,
 );
 
+const analitica = require("./analitica");
+
+exports.analytics = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  analitica,
+);
+
 const clasificaciones = require("./clasificaciones");
 
 exports.classificationSessions = onRequest(
