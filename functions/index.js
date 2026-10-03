@@ -318,3 +318,10 @@ exports.analytics = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   analitica,
 );
+
+const clasificaciones = require("./clasificaciones");
+
+exports.classificationSessions = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  clasificaciones,
+);
