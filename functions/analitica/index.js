@@ -10,26 +10,39 @@ const coleccion = () => getFirestore().collection("groupingEvents");
 
 const METODOS_VALIDOS = ["automatic", "manual"];
 const MATERIAS = ["matematicas", "lectura"];
+const MAX_ESTUDIANTES = 500; // Mismo tope que las sesiones de clasificación
+const TOLERANCIA_FUTURO_MS = 5 * 60 * 1000; // Relojes de celular adelantados
 
+// POST /grouping-events  { subject, classSize, method, timestamp? }
+// El docente sale siempre del token verificado: un evento nunca se registra a nombre de otro.
 app.post("/grouping-events", async (req, res) => {
-    const { subject, classSize, method, teacherId, timestamp } = req.body || {};
+    const { subject, classSize, method, timestamp } = req.body || {};
 
     if (!MATERIAS.includes(subject)) {
         throw new ErrorApi(400, "invalid-argument", "Materia inválida. Usa 'matematicas' o 'lectura'.");
     }
-    if (typeof classSize !== "number" || classSize < 0) {
-        throw new ErrorApi(400, "invalid-argument", "classSize debe ser un número positivo.");
+    if (!Number.isInteger(classSize) || classSize < 0 || classSize > MAX_ESTUDIANTES) {
+        throw new ErrorApi(400, "invalid-argument", `classSize debe ser un entero entre 0 y ${MAX_ESTUDIANTES}.`);
     }
     if (!METODOS_VALIDOS.includes(method)) {
         throw new ErrorApi(400, "invalid-argument", "method debe ser 'automatic' o 'manual'.");
+    }
+
+    // La hora en que el docente armó el grupo (puede ser anterior si la app estaba sin conexión).
+    let momento = new Date();
+    if (timestamp !== undefined) {
+        momento = typeof timestamp === "string" ? new Date(timestamp) : new Date(NaN);
+        if (Number.isNaN(momento.getTime()) || momento.getTime() > Date.now() + TOLERANCIA_FUTURO_MS) {
+            throw new ErrorApi(400, "invalid-argument", "timestamp debe ser una fecha válida que no sea futura.");
+        }
     }
 
     const evento = {
         subject,
         classSize,
         method,
-        teacherId: teacherId || req.usuario.uid,
-        timestamp: timestamp || new Date().toISOString(),
+        teacherId: req.usuario.uid,
+        timestamp: momento.toISOString(),
         createdAt: new Date().toISOString(),
         createdBy: req.usuario.uid,
     };
