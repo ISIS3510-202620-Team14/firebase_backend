@@ -328,6 +328,13 @@ exports.classificationSessions = onRequest(
 
 const horas = require("./horas");
 
+const actividades = require("./actividades");
+
+exports.activities = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  actividades,
+);
+
 exports.workedHours = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   horas,
