@@ -86,10 +86,22 @@ app.put("/:date", async (req, res) => {
     if (schoolId !== undefined && typeof schoolId !== "string") throw invalido(["schoolId"]);
 
     const ref = coleccion().doc(`${req.usuario.uid}_${fecha}`);
-    const reemplazado = await db().runTransaction(async (tx) => {
+    const resultado = await db().runTransaction(async function guardarReporte(tx) {
         const previo = await tx.get(ref);
-        if (previo.exists && previo.get("savedAt").toMillis() >= guardado) return false;
-        tx.set(ref, {
+        if (previo.exists && previo.get("savedAt").toMillis() >= guardado) {
+            const anterior = previo.data();
+            const igual = anterior.savedAt.toMillis() === guardado
+                && anterior.schoolId === (schoolId ?? null)
+                && anterior.plannedHours === body.plannedHours
+                && anterior.workedHours === body.workedHours
+                && anterior.origin === body.origin
+                && anterior.reason === motivo
+                && anterior.presentAtCampus === body.presentAtCampus
+                && anterior.platform === body.platform
+                && anterior.appVersion === body.appVersion.trim();
+            return { stored: igual, report: serializarReporte(anterior) };
+        }
+        const datos = {
             uid: req.usuario.uid, // siempre del token verificado, nunca del cuerpo
             rol: req.usuario.rol,
             schoolId: schoolId ?? null,
@@ -104,11 +116,47 @@ app.put("/:date", async (req, res) => {
             appVersion: body.appVersion.trim(),
             savedAt: Timestamp.fromMillis(guardado),
             receivedAt: FieldValue.serverTimestamp()
-        });
-        return true;
+        };
+        tx.set(ref, datos);
+        return { stored: true, report: serializarReporte(datos) };
     });
 
-    res.status(200).json({ id: ref.id, stored: reemplazado });
+    res.status(200).json({ id: ref.id, ...resultado });
+});
+
+function serializarReporte(datos) {
+    return {
+        date: datos.date,
+        schoolId: datos.schoolId,
+        plannedHours: datos.plannedHours,
+        workedHours: datos.workedHours,
+        origin: datos.origin,
+        reason: datos.reason,
+        presentAtCampus: datos.presentAtCampus,
+        savedAt: datos.savedAt.toDate().toISOString(),
+        platform: datos.platform,
+        appVersion: datos.appVersion,
+    };
+}
+
+app.get("/", async function consultarPeriodo(req, res) {
+    const { from, to } = req.query;
+    if (!fechaValida(from) || !fechaValida(to) || from > to
+        || Date.parse(to) - Date.parse(from) > 365 * DIA_MS) {
+        throw invalido(["from", "to"]);
+    }
+    const referencias = [];
+    for (let ms = Date.parse(from); ms <= Date.parse(to); ms += DIA_MS) {
+        const fecha = new Date(ms).toISOString().slice(0, 10);
+        referencias.push(coleccion().doc(`${req.usuario.uid}_${fecha}`));
+    }
+    const documentos = await db().getAll(...referencias);
+    const reports = [];
+    for (const documento of documentos) {
+        if (documento.exists) reports.push(serializarReporte(documento.data()));
+    }
+    reports.sort(function ordenar(a, b) { return a.date.localeCompare(b.date); });
+    res.status(200).json({ reports });
 });
 
 const redondear = (v) => Math.round(v * 10) / 10;
@@ -153,6 +201,12 @@ app.get("/report", soloAdmin, async (req, res) => {
         .sort((a, b) => a.week.localeCompare(b.week));
 
     res.status(200).json({ weeks: semanas, schoolId: schoolId ?? null, summary: weeks });
+});
+
+app.get("/:date", async function consultarDia(req, res) {
+    if (!fechaValida(req.params.date)) throw invalido(["date"]);
+    const documento = await coleccion().doc(`${req.usuario.uid}_${req.params.date}`).get();
+    res.status(200).json({ report: documento.exists ? serializarReporte(documento.data()) : null });
 });
 
 app.use(manejarErrores);

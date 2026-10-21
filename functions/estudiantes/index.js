@@ -84,6 +84,7 @@ function codigoProvisional() {
 // yyyy-mm-dd real (rechaza 2025-02-31).
 function esFecha(valor) {
     return typeof valor === "string" && /^\d{4}-\d{2}-\d{2}$/.test(valor)
+        && Number.isFinite(Date.parse(`${valor}T00:00:00Z`))
         && new Date(`${valor}T00:00:00Z`).toISOString().startsWith(valor);
 }
 
@@ -330,7 +331,8 @@ app.post("/:id/evaluations", async (req, res) => {
 app.put("/:id/attendance", async (req, res) => {
     const { date, status } = req.body || {};
     const invalidos = [];
-    if(!esFecha(date) || new Date(`${date}T00:00:00Z`).getTime() > Date.now() + 24 * 60 * 60 * 1000) invalidos.push("date");
+    const hoy = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    if(!esFecha(date) || date > hoy) invalidos.push("date");
     if(!ESTADOS_ASISTENCIA.includes(status)) invalidos.push("status");
     if(invalidos.length) throw invalido(invalidos);
 
