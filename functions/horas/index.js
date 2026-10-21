@@ -1,7 +1,4 @@
-// Horas realizadas por día de cada docente (feature de sugerencia por ubicación y horario).
-// La app las guarda en el dispositivo y las sube cuando hay señal. Es un solo reporte por docente y día:
-// repetirlo o corregirlo reemplaza el anterior, y uno más viejo nunca pisa a uno más nuevo.
-// Nunca llegan coordenadas: solo si el docente estuvo en la sede (presentAtCampus).
+const { createHash } = require("node:crypto");
 const express = require("express");
 const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 const { ErrorApi, manejarErrores } = require("../estudiantes/errores");
@@ -83,10 +80,15 @@ app.put("/:date", async (req, res) => {
     const fecha = req.params.date;
     const { guardado, motivo } = validarReporte(fecha, body);
     const schoolId = escuelaPedida(req.usuario, body.schoolId ?? undefined); // 403 si la escuela no es del docente
-    if (schoolId !== undefined && typeof schoolId !== "string") throw invalido(["schoolId"]);
+    if (typeof schoolId !== "string" || !schoolId.trim()) throw invalido(["schoolId"]);
 
-    const ref = coleccion().doc(`${req.usuario.uid}_${fecha}`);
+    const antiguo = coleccion().doc(`${req.usuario.uid}_${fecha}`);
+    const identificador = createHash("sha256").update(JSON.stringify([req.usuario.uid, fecha, schoolId])).digest("hex");
+    let ref;
     const resultado = await db().runTransaction(async function guardarReporte(tx) {
+        const legado = await tx.get(antiguo);
+        ref = legado.exists && legado.get("schoolId") === schoolId
+            ? antiguo : coleccion().doc(identificador);
         const previo = await tx.get(ref);
         if (previo.exists && previo.get("savedAt").toMillis() >= guardado) {
             const anterior = previo.data();
@@ -145,15 +147,11 @@ app.get("/", async function consultarPeriodo(req, res) {
         || Date.parse(to) - Date.parse(from) > 365 * DIA_MS) {
         throw invalido(["from", "to"]);
     }
-    const referencias = [];
-    for (let ms = Date.parse(from); ms <= Date.parse(to); ms += DIA_MS) {
-        const fecha = new Date(ms).toISOString().slice(0, 10);
-        referencias.push(coleccion().doc(`${req.usuario.uid}_${fecha}`));
-    }
-    const documentos = await db().getAll(...referencias);
+    const documentos = await coleccion().where("uid", "==", req.usuario.uid).get();
     const reports = [];
-    for (const documento of documentos) {
-        if (documento.exists) reports.push(serializarReporte(documento.data()));
+    for (const documento of documentos.docs) {
+        const fecha = documento.get("date");
+        if (fecha >= from && fecha <= to) reports.push(serializarReporte(documento.data()));
     }
     reports.sort(function ordenar(a, b) { return a.date.localeCompare(b.date); });
     res.status(200).json({ reports });
@@ -205,7 +203,12 @@ app.get("/report", soloAdmin, async (req, res) => {
 
 app.get("/:date", async function consultarDia(req, res) {
     if (!fechaValida(req.params.date)) throw invalido(["date"]);
-    const documento = await coleccion().doc(`${req.usuario.uid}_${req.params.date}`).get();
+    const schoolId = escuelaPedida(req.usuario, req.query.schoolId);
+    if (typeof schoolId !== "string" || !schoolId.trim()) throw invalido(["schoolId"]);
+    const antiguo = await coleccion().doc(`${req.usuario.uid}_${req.params.date}`).get();
+    const identificador = createHash("sha256").update(JSON.stringify([req.usuario.uid, req.params.date, schoolId])).digest("hex");
+    const documento = antiguo.exists && antiguo.get("schoolId") === schoolId
+        ? antiguo : await coleccion().doc(identificador).get();
     res.status(200).json({ report: documento.exists ? serializarReporte(documento.data()) : null });
 });
 
