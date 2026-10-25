@@ -84,6 +84,7 @@ function codigoProvisional() {
 // yyyy-mm-dd real (rechaza 2025-02-31).
 function esFecha(valor) {
     return typeof valor === "string" && /^\d{4}-\d{2}-\d{2}$/.test(valor)
+        && Number.isFinite(Date.parse(`${valor}T00:00:00Z`))
         && new Date(`${valor}T00:00:00Z`).toISOString().startsWith(valor);
 }
 
@@ -327,17 +328,32 @@ app.post("/:id/evaluations", async (req, res) => {
 });
 
 //asistencia de un día: vino / no_vino / sin_registro (borra la marca)
-app.put("/:id/attendance", async (req, res) => {
-    const { date, status } = req.body || {};
+app.put("/:id/attendance", async function registrarAsistencia(req, res) {
+    const { date, status, expectedStatus = "sin_registro" } = req.body || {};
     const invalidos = [];
-    if(!esFecha(date) || new Date(`${date}T00:00:00Z`).getTime() > Date.now() + 24 * 60 * 60 * 1000) invalidos.push("date");
+    const hoy = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    if(!esFecha(date) || date > hoy) invalidos.push("date");
     if(!ESTADOS_ASISTENCIA.includes(status)) invalidos.push("status");
+    if(!ESTADOS_ASISTENCIA.includes(expectedStatus)) invalidos.push("expectedStatus");
     if(invalidos.length) throw invalido(invalidos);
 
     const doc = await cargarEstudiante(req);
     const marca = doc.ref.collection("attendance").doc(date);
-    if(status === "sin_registro") await marca.delete();
-    else await marca.set({ date, present: status === "vino", recordedBy: req.usuario.uid, updatedAt: new Date().toISOString() });
+    await getFirestore().runTransaction(async function guardarAsistencia(tx) {
+        const actual = estadoAsistencia(await tx.get(marca));
+        if (actual === status) return;
+        if (actual !== expectedStatus) {
+            throw new ErrorApi(409, "attendance-conflict",
+                "Otro celular cambió esta asistencia. Actualiza la lista antes de corregirla.");
+        }
+        if (status === "sin_registro") tx.delete(marca);
+        else tx.set(marca, {
+            date,
+            present: status === "vino",
+            recordedBy: req.usuario.uid,
+            updatedAt: new Date().toISOString()
+        });
+    });
 
     res.status(200).json({ id: doc.id, date, status });
 });
