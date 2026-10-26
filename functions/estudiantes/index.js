@@ -89,7 +89,7 @@ function esFecha(valor) {
 }
 
 function estadoAsistencia(marca) {
-    if (!marca.exists) return "sin_registro";
+    if (!marca.exists || marca.get("status") === "sin_registro") return "sin_registro";
     return marca.get("present") === true ? "vino" : "no_vino";
 }
 
@@ -368,17 +368,20 @@ app.get("/:id/progress", async (req, res) => {
 
     const todas = evaluaciones.docs.map((d) => d.data());
     const subjects = Object.fromEntries(MATERIAS.map((m) => [m, resumirMateria(m, todas.filter((e) => e.subject === m))]),);
-    const presentes = asistencia.docs.filter((d) => d.get("present") === true).length;
+    const registradas = asistencia.docs.filter((d) => d.get("status") !== "sin_registro");
+    const presentes = registradas.filter((d) => d.get("present") === true).length;
 
     res.status(200).json({
         student: aRespuesta(doc),
         subjects,
         attendance: {
-            recorded: asistencia.size,
+            recorded: registradas.length,
             present: presentes,
-            percentage: asistencia.size ? Math.round((presentes * 100) / asistencia.size) : null
+            percentage: registradas.length ? Math.round((presentes * 100) / registradas.length) : null
         }
     });
 });
 app.use(manejarErrores);
 module.exports = app;
+
+module.exports.syncValidation = { validarEstudiante, documentoNuevo, esFecha };
