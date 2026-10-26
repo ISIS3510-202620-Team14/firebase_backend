@@ -339,3 +339,10 @@ exports.workedHours = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   horas,
 );
+
+const conflictos = require("./conflictos");
+
+exports.attendanceConflicts = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  conflictos,
+);
