@@ -1,6 +1,7 @@
 // BQ #9 (tipo 3): ¿cuánto tarda un docente en clasificar 25 estudiantes?
 // La app manda una sesión por cada pasada por la pantalla de Clasificación en la que el docente
-// clasificó al menos un estudiante; el reporte normaliza ese tiempo a 25 estudiantes.
+// clasificó al menos un estudiante, y la vuelve a mandar (mismo clientId) con el avance tras cada
+// clasificación; el reporte normaliza ese tiempo a 25 estudiantes.
 const express = require("express");
 const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 const { ErrorApi, manejarErrores } = require("../estudiantes/errores");
@@ -80,12 +81,30 @@ app.post("/", async (req, res) => {
     if (typeof schoolId !== "string") throw invalido(["schoolId"]);
 
     const ref = coleccion().doc(body.clientId);
+    const avance = {
+        endedAt: Timestamp.fromMillis(fin),
+        activeSeconds: body.activeSeconds,
+        studentsClassified: body.studentsClassified,
+        studentsInList: body.studentsInList,
+        secondsPer25: Math.round((body.activeSeconds / body.studentsClassified) * ESTUDIANTES_OBJETIVO),
+        receivedAt: FieldValue.serverTimestamp()
+    };
     const guardada = await db().runTransaction(async (tx) => {
         const previa = await tx.get(ref);
         if (previa.exists) {
-            // El mismo clientId de otro docente no es un reintento
+            // El mismo clientId de otro docente, o de otra escuela o materia, no es la misma sesión
             if (previa.get("uid") !== req.usuario.uid) throw new ErrorApi(409, "already-exists");
-            return false;
+            if (previa.get("schoolId") !== schoolId || previa.get("subject") !== body.subject) {
+                throw new ErrorApi(409, "already-exists");
+            }
+            // La app manda la sesión tras cada clasificación: se guarda el avance, pero un envío
+            // repetido o que llegó tarde (más viejo que lo guardado) no la hace retroceder
+            const avanza = fin > previa.get("endedAt").toMillis()
+                && body.studentsClassified >= previa.get("studentsClassified")
+                && body.activeSeconds >= previa.get("activeSeconds");
+            if (!avanza) return false;
+            tx.update(ref, avance);
+            return true;
         }
         tx.set(ref, {
             uid: req.usuario.uid, // siempre del token verificado, nunca del cuerpo
@@ -95,18 +114,13 @@ app.post("/", async (req, res) => {
             platform: body.platform,
             appVersion: body.appVersion.trim(),
             startedAt: Timestamp.fromMillis(inicio),
-            endedAt: Timestamp.fromMillis(fin),
             week: semanaDe(inicio),
-            activeSeconds: body.activeSeconds,
-            studentsClassified: body.studentsClassified,
-            studentsInList: body.studentsInList,
-            secondsPer25: Math.round((body.activeSeconds / body.studentsClassified) * ESTUDIANTES_OBJETIVO),
-            receivedAt: FieldValue.serverTimestamp()
+            ...avance
         });
-        return true;
+        return "creada";
     });
 
-    res.status(guardada ? 201 : 200).json({ id: body.clientId, stored: guardada });
+    res.status(guardada === "creada" ? 201 : 200).json({ id: body.clientId, stored: guardada !== false });
 });
 
 // Minutos por cada 25 estudiantes de un conjunto de sesiones. Se pondera por estudiantes:
