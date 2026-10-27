@@ -29,6 +29,7 @@ async function school(tx, user, schoolId, campus) {
         }
     }
 }
+/** Validates an operation and prepares its atomic writes. */
 async function prepare(tx, uid, user, op) {
     const db = getFirestore();
     const parts = op.key.split("/");
@@ -71,6 +72,14 @@ async function prepare(tx, uid, user, op) {
             campus: (doc.exists ? doc.get(root === "groups" ? "campusId" : "campus") : body.campusId || body.campus) || null
         } : null;
     const actualStatus = !doc.exists || doc.get("status") === "sin_registro" ? "sin_registro" : doc.get("present") === true ? "vino" : "no_vino";
+    if (parts[2] === "attendance") {
+        const statuses = ["vino", "no_vino", "sin_registro"];
+        if (op.action !== "attendance" || !statuses.includes(body.status) ||
+            (body.expectedStatus !== undefined && !statuses.includes(body.expectedStatus)) ||
+            parts[3] > new Date(Date.now() - 18000000).toISOString().slice(0, 10)) invalid();
+        // # micro opt
+        if (body.status === actualStatus) return { records: [current], writes: [], scope };
+    }
     const staleAttendance = parts[2] === "attendance" && body.expectedStatus !== undefined &&
         body.expectedStatus !== actualStatus && body.status !== actualStatus;
     if (current.version !== op.baseVersion || staleAttendance) return { conflict: true, records: [current], scope };
@@ -84,8 +93,6 @@ async function prepare(tx, uid, user, op) {
         changed.push(record(key || target.path, next));
     }
     if (parts[2] === "attendance") {
-        if (op.action !== "attendance" || !["vino", "no_vino", "sin_registro"].includes(body.status) ||
-            parts[3] > new Date(Date.now() - 18000000).toISOString().slice(0,10)) invalid();
         data = { date: parts[3], status: body.status, present: body.status === "vino", recordedBy: uid, updatedAt: now };
         set(ref, data, op.key);
     } else if (root === "students") {
