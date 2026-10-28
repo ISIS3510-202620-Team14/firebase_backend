@@ -2,9 +2,15 @@ const express = require("express");
 const { getFirestore } = require("firebase-admin/firestore");
 const { ErrorApi, manejarErrores } = require("../estudiantes/errores");
 const { autenticar } = require("../estudiantes/auth");
+const { exportAnalytics } = require("./export");
 
 const app = express();
 app.use(autenticar);
+
+/** Returns manual aggregate data for Sheets and Looker. */
+app.get("/export", async function exportReport(req, res) {
+    await exportAnalytics(req, res, getFirestore());
+});
 
 const coleccion = () => getFirestore().collection("groupingEvents");
 

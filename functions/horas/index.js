@@ -214,3 +214,5 @@ app.get("/:date", async function consultarDia(req, res) {
 
 app.use(manejarErrores);
 module.exports = app;
+
+module.exports.syncValidation = { validarReporte, semanaDe };
