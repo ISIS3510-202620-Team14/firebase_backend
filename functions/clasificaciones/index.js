@@ -1,3 +1,4 @@
+// functions/clasificaciones/index.js
 // BQ #9 (tipo 3): ¿cuánto tarda un docente en clasificar 25 estudiantes?
 // La app manda una sesión por cada pasada por la pantalla de Clasificación en la que el docente
 // clasificó al menos un estudiante; el reporte normaliza ese tiempo a 25 estudiantes.
@@ -80,33 +81,40 @@ app.post("/", async (req, res) => {
     if (typeof schoolId !== "string") throw invalido(["schoolId"]);
 
     const ref = coleccion().doc(body.clientId);
-    const guardada = await db().runTransaction(async (tx) => {
+    const camposProgreso = {
+        subject: body.subject,
+        platform: body.platform,
+        appVersion: body.appVersion.trim(),
+        endedAt: Timestamp.fromMillis(fin),
+        activeSeconds: body.activeSeconds,
+        studentsClassified: body.studentsClassified,
+        studentsInList: body.studentsInList,
+        secondsPer25: Math.round((body.activeSeconds / body.studentsClassified) * ESTUDIANTES_OBJETIVO),
+        receivedAt: FieldValue.serverTimestamp()
+    };
+    const creada = await db().runTransaction(async (tx) => {
         const previa = await tx.get(ref);
         if (previa.exists) {
             // El mismo clientId de otro docente no es un reintento
             if (previa.get("uid") !== req.usuario.uid) throw new ErrorApi(409, "already-exists");
+            // Es la misma sesión que avanza (el docente clasificó a otro estudiante): se
+            // actualiza el progreso en vez de descartarlo, así la sesión final guarda el
+            // tiempo y el conteo reales, no solo los de la primera clasificación.
+            tx.update(ref, camposProgreso);
             return false;
         }
         tx.set(ref, {
             uid: req.usuario.uid, // siempre del token verificado, nunca del cuerpo
             rol: req.usuario.rol,
             schoolId,
-            subject: body.subject,
-            platform: body.platform,
-            appVersion: body.appVersion.trim(),
             startedAt: Timestamp.fromMillis(inicio),
-            endedAt: Timestamp.fromMillis(fin),
             week: semanaDe(inicio),
-            activeSeconds: body.activeSeconds,
-            studentsClassified: body.studentsClassified,
-            studentsInList: body.studentsInList,
-            secondsPer25: Math.round((body.activeSeconds / body.studentsClassified) * ESTUDIANTES_OBJETIVO),
-            receivedAt: FieldValue.serverTimestamp()
+            ...camposProgreso
         });
         return true;
     });
 
-    res.status(guardada ? 201 : 200).json({ id: body.clientId, stored: guardada });
+    res.status(creada ? 201 : 200).json({ id: body.clientId, stored: true });
 });
 
 // Minutos por cada 25 estudiantes de un conjunto de sesiones. Se pondera por estudiantes:
