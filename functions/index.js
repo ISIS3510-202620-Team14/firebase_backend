@@ -339,3 +339,14 @@ exports.workedHours = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   horas,
 );
+
+exports.sync = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  require("./sync"),
+);
+const conflictos = require("./conflictos");
+
+exports.attendanceConflicts = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  conflictos,
+);

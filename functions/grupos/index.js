@@ -276,3 +276,5 @@ app.delete("/:id/students/:studentId", async (req, res) => {
 
 app.use(manejarErrores);
 module.exports = app;
+
+module.exports.syncValidation = { validarGrupo };
