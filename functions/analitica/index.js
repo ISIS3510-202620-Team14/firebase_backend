@@ -139,5 +139,84 @@ app.get("/assessments-by-grade", async (req, res) => {
 })
 
 
+// BQ #11 (Type 3): ¿qué tanto corrige el docente lo que leyó el escáner antes de importar?
+// Al importar, la app guarda un evento scan_review con conteos (nunca nombres ni códigos).
+const SEMANAS_REVISION = 8;
+const MAX_EVENTOS_REVISION = 5000;
+const MS_POR_DIA_REVISION = 24 * 60 * 60 * 1000;
+const ORIGENES_REVISION = ["attendance", "manage_students"];
+
+const cuota = (parte, total) => (total ? redondear((parte * 100) / total) : null);
+
+// Los eventos los escribe el celular: un conteo raro cuenta como 0 y nada supera las filas leídas
+function aRevision(d) {
+    const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+    const leidas = n(d.rowsRead);
+    const tope = (v) => Math.min(n(v), leidas);
+    return {
+        teacherId: d.teacherId,
+        source: ORIGENES_REVISION.includes(d.source) ? d.source : "attendance",
+        leidas,
+        sinCambios: tope(d.rowsUnchanged),
+        editadas: tope(d.rowsEdited),
+        nombres: tope(d.namesEdited),
+        codigos: tope(d.codesEdited),
+        borradas: tope(d.rowsDeleted),
+    };
+}
+
+function resumirRevisiones(revisiones) {
+    const suma = (campo) => revisiones.reduce((s, r) => s + r[campo], 0);
+    const leidas = suma("leidas");
+    return {
+        imports: revisiones.length,
+        rowsRead: leidas,
+        unchanged: { rows: suma("sinCambios"), share: cuota(suma("sinCambios"), leidas) },
+        edited: { rows: suma("editadas"), share: cuota(suma("editadas"), leidas) },
+        deleted: { rows: suma("borradas"), share: cuota(suma("borradas"), leidas) },
+        fields: [
+            { key: "name", rows: suma("nombres"), share: cuota(suma("nombres"), leidas) },
+            { key: "code", rows: suma("codigos"), share: cuota(suma("codigos"), leidas) },
+        ],
+    };
+}
+
+// GET /scan-review?weeks=8  (solo admin)
+app.get("/scan-review", async (req, res) => {
+    if (req.usuario.rol !== "admin") throw new ErrorApi(403, "permission-denied");
+    const semanas = req.query.weeks === undefined ? SEMANAS_REVISION : Number(req.query.weeks);
+    if (!Number.isInteger(semanas) || semanas < 1 || semanas > 52) {
+        throw new ErrorApi(400, "invalid-argument", "weeks debe ser un entero entre 1 y 52.");
+    }
+
+    // Un solo filtro de igualdad (sin índice compuesto); la fecha se filtra en memoria
+    const desde = Date.now() - semanas * 7 * MS_POR_DIA_REVISION;
+    const snap = await getFirestore()
+        .collection("events")
+        .where("name", "==", "scan_review")
+        .limit(MAX_EVENTOS_REVISION)
+        .get();
+    const revisiones = snap.docs
+        .map((doc) => doc.data())
+        .filter((d) => d.createdAt?.toMillis?.() >= desde)
+        .map(aRevision);
+
+    const total = resumirRevisiones(revisiones);
+    // El campo que más se corrige es la respuesta directa de la BQ; null si no hay correcciones o empatan
+    const [nombre, codigo] = total.fields;
+    const masCorregido = nombre.rows === codigo.rows ? null : nombre.rows > codigo.rows ? "name" : "code";
+
+    res.status(200).json({
+        weeks: semanas,
+        teachers: new Set(revisiones.map((r) => r.teacherId)).size,
+        ...total,
+        mostCorrected: masCorregido,
+        bySource: ORIGENES_REVISION.map((origen) => ({
+            key: origen,
+            ...resumirRevisiones(revisiones.filter((r) => r.source === origen)),
+        })),
+    });
+});
+
 app.use(manejarErrores);
 module.exports = app;
