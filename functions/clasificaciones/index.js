@@ -1,3 +1,4 @@
+// functions/clasificaciones/index.js
 // BQ #9 (tipo 3): ¿cuánto tarda un docente en clasificar 25 estudiantes?
 // La app manda una sesión por cada pasada por la pantalla de Clasificación en la que el docente
 // clasificó al menos un estudiante, y la vuelve a mandar (mismo clientId) con el avance tras cada
@@ -110,6 +111,7 @@ app.post("/", async (req, res) => {
             uid: req.usuario.uid, // siempre del token verificado, nunca del cuerpo
             rol: req.usuario.rol,
             schoolId,
+            // Se fijan al crear: la comprobación de arriba garantiza que no cambian después
             subject: body.subject,
             platform: body.platform,
             appVersion: body.appVersion.trim(),

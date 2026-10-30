@@ -1,3 +1,4 @@
+// tests/clasificaciones.test.js
 // BQ #9: sesiones de clasificación y su reporte de minutos por cada 25 estudiantes.
 const { test, before, after } = require("node:test");
 const assert = require("node:assert");
@@ -66,13 +67,38 @@ function sesion(clientId, segundos, clasificados, extra = {}) {
   };
 }
 
-test("una sesión se guarda una sola vez aunque la app la reintente", async () => {
+test("una sesión no se duplica aunque la app la reintente, pero sí guarda los datos del reintento", async () => {
   const cuerpo = sesion(`ana-1-${sufijo}`, 600, 10);
   const primera = await llamar("POST", "classificationSessions", cuerpo, tokens.ana);
   assert.strictEqual(primera.estado, 201);
+  assert.strictEqual(primera.datos.stored, true);
   const reintento = await llamar("POST", "classificationSessions", cuerpo, tokens.ana);
+  // No es un nuevo documento (200, no 201), pero el progreso sí quedó guardado.
   assert.strictEqual(reintento.estado, 200);
-  assert.strictEqual(reintento.datos.stored, false);
+  assert.strictEqual(reintento.datos.stored, true);
+});
+
+test("el progreso de una sesión en curso se actualiza, no se descarta", async () => {
+  const clientId = `ana-progreso-${sufijo}`;
+  // El docente clasifica a 1 estudiante primero (lo que manda guardarAvance() en Kotlin)...
+  await llamar("POST", "classificationSessions", sesion(clientId, 30, 1), tokens.ana);
+  // ...y más tarde, en la misma sesión (mismo clientId), clasifica a los 25.
+  const final = await llamar("POST", "classificationSessions", sesion(clientId, 750, 25), tokens.ana);
+  assert.strictEqual(final.estado, 200);
+  assert.strictEqual(final.datos.stored, true);
+
+  // Si se hubiera quedado con el primer envío (1 estudiante, 30s) nunca llegaría a 25.
+  // Debe reflejar el último estado: 750s para 25 estudiantes.
+  const sesionGuardada = await entorno.withSecurityRulesDisabled((ctx) =>
+    ctx.firestore().collection("classificationSessions").doc(clientId).get(),
+  );
+  assert.strictEqual(sesionGuardada.data().studentsClassified, 25);
+  assert.strictEqual(sesionGuardada.data().activeSeconds, 750);
+
+  // Se borra para no alterar el promedio de ana en la prueba del reporte, más abajo.
+  await entorno.withSecurityRulesDisabled((ctx) =>
+    ctx.firestore().collection("classificationSessions").doc(clientId).delete(),
+  );
 });
 
 test("la sesión se actualiza con el avance y un envío viejo no la hace retroceder", async () => {
