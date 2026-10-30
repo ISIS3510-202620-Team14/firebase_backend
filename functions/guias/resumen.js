@@ -79,4 +79,11 @@ function resumir(eventos) {
     });
 }
 
-module.exports = { resumir, GUIAS };
+/** Keeps only events with a known platform and exact guide version. */
+function seleccionar(eventos, platform, version) {
+    return eventos.filter(function (event) {
+        return event.platform === platform && event.tutorial_version === version;
+    });
+}
+
+module.exports = { resumir, seleccionar, GUIAS };
