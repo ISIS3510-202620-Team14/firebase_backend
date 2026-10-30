@@ -350,3 +350,10 @@ exports.attendanceConflicts = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   conflictos,
 );
+
+const guias = require("./guias");
+
+exports.tutorials = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  guias,
+);
