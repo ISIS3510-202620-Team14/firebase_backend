@@ -101,6 +101,24 @@ test("el progreso de una sesión en curso se actualiza, no se descarta", async (
   );
 });
 
+test("la sesión se actualiza con el avance y un envío viejo no la hace retroceder", async () => {
+  // Con el admin: sus sesiones no entran al reporte y no mueven los números del último test
+  const clientId = `admin-avance-${sufijo}`;
+  const primera = await llamar("POST", "classificationSessions", sesion(clientId, 60, 2), tokens.admin);
+  assert.strictEqual(primera.estado, 201);
+
+  const avance = await llamar("POST", "classificationSessions", sesion(clientId, 120, 4), tokens.admin);
+  assert.strictEqual(avance.estado, 200);
+  assert.strictEqual(avance.datos.stored, true);
+
+  const tardio = await llamar("POST", "classificationSessions", sesion(clientId, 60, 2), tokens.admin);
+  assert.strictEqual(tardio.estado, 200);
+  assert.strictEqual(tardio.datos.stored, false);
+
+  const otraMateria = await llamar("POST", "classificationSessions", sesion(clientId, 180, 5, { subject: "matematicas" }), tokens.admin);
+  assert.strictEqual(otraMateria.estado, 409);
+});
+
 test("el mismo clientId de otro docente no es un reintento", async () => {
   const { estado } = await llamar("POST", "classificationSessions", sesion(`ana-1-${sufijo}`, 600, 10), tokens.beto);
   assert.strictEqual(estado, 409);

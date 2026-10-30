@@ -90,6 +90,90 @@ app.get("/top-activities", async (req, res) => {
     res.status(200).json({ total, activities });
 });
 
+// BQ #10 (Type 3): ¿las páginas escaneadas con buena luz y el celular quieto se leen mejor?
+// La app guarda un evento scan_page por página con las condiciones de la foto y lo que leyó el OCR.
+const NIVELES_LUZ = ["dark", "low", "good", "glare", "unknown"];
+const SEMANAS_ESCANEO = 8;
+const MAX_EVENTOS_ESCANEO = 5000;
+const DIA_MS = 24 * 60 * 60 * 1000;
+
+const porcentaje = (parte, total) => (total ? Math.round((parte * 1000) / total) / 10 : null);
+
+// Una página no se pudo usar si el OCR falló o no encontró ninguna fila
+const fallida = (p) => p.ocrFailed || p.rows === 0;
+
+function resumir(clave, paginas) {
+    const filas = paginas.reduce((s, p) => s + p.rows, 0);
+    return {
+        key: clave,
+        pages: paginas.length,
+        avgRows: paginas.length ? Math.round((filas * 10) / paginas.length) / 10 : null,
+        failureRate: porcentaje(paginas.filter(fallida).length, paginas.length),
+    };
+}
+
+// Agrupa en el orden de [claves]; las claves sin páginas también salen, con pages = 0
+function agrupar(paginas, claves, claveDe) {
+    return claves.map((clave) => resumir(clave, paginas.filter((p) => claveDe(p) === clave)));
+}
+
+// Los eventos los escribe el celular: cualquier campo raro se normaliza en vez de romper el reporte
+function aPagina(d) {
+    const rows = Number.isInteger(d.rows) && d.rows >= 0 ? d.rows : 0;
+    return {
+        teacherId: d.teacherId,
+        lightLevel: NIVELES_LUZ.includes(d.lightLevel) ? d.lightLevel : "unknown",
+        steady: typeof d.steady === "boolean" ? d.steady : null,
+        torch: d.torch === true,
+        autoCapture: d.autoCapture === true,
+        ocrFailed: d.ocrFailed === true,
+        rows,
+    };
+}
+
+// GET /scan-quality?weeks=8  (solo admin)
+app.get("/scan-quality", async (req, res) => {
+    if (req.usuario.rol !== "admin") throw new ErrorApi(403, "permission-denied");
+    const semanas = req.query.weeks === undefined ? SEMANAS_ESCANEO : Number(req.query.weeks);
+    if (!Number.isInteger(semanas) || semanas < 1 || semanas > 52) {
+        throw new ErrorApi(400, "invalid-argument", "weeks debe ser un entero entre 1 y 52.");
+    }
+
+    // Un solo filtro de igualdad (sin índice compuesto); la fecha se filtra en memoria
+    const desde = Date.now() - semanas * 7 * DIA_MS;
+    const snap = await getFirestore()
+        .collection("events")
+        .where("name", "==", "scan_page")
+        .limit(MAX_EVENTOS_ESCANEO)
+        .get();
+    const paginas = snap.docs
+        .map((doc) => doc.data())
+        .filter((d) => d.createdAt?.toMillis?.() >= desde)
+        .map(aPagina);
+
+    // "Listo" es lo que el asistente le pide al docente: buena luz y el celular quieto
+    const lista = (p) => p.lightLevel === "good" && p.steady === true;
+    const docentes = new Set(paginas.map((p) => p.teacherId));
+    const conAutomatica = new Set(paginas.filter((p) => p.autoCapture).map((p) => p.teacherId));
+
+    res.status(200).json({
+        weeks: semanas,
+        pages: paginas.length,
+        teachers: docentes.size,
+        ready: agrupar(paginas, ["ready", "not_ready"], (p) => (lista(p) ? "ready" : "not_ready")),
+        light: agrupar(paginas, NIVELES_LUZ, (p) => p.lightLevel),
+        steadiness: agrupar(paginas, ["steady", "moving", "unknown"],
+            (p) => (p.steady === null ? "unknown" : p.steady ? "steady" : "moving")),
+        torch: agrupar(paginas, ["on", "off"], (p) => (p.torch ? "on" : "off")),
+        capture: agrupar(paginas, ["auto", "manual"], (p) => (p.autoCapture ? "auto" : "manual")),
+        autoCapture: {
+            pagesShare: porcentaje(paginas.filter((p) => p.autoCapture).length, paginas.length),
+            teachers: conAutomatica.size,
+            teachersShare: porcentaje(conAutomatica.size, docentes.size),
+        },
+    });
+});
+
 //bq # 12
 const MAX_EVALUACIONES = 20000;
 const redondear = (n) => Math.round(n* 10) / 10;
@@ -138,6 +222,85 @@ app.get("/assessments-by-grade", async (req, res) => {
     res.status(200).json({ total: overall.total, overall, grades});
 })
 
+
+// BQ #11 (Type 3): ¿qué tanto corrige el docente lo que leyó el escáner antes de importar?
+// Al importar, la app guarda un evento scan_review con conteos (nunca nombres ni códigos).
+const SEMANAS_REVISION = 8;
+const MAX_EVENTOS_REVISION = 5000;
+const MS_POR_DIA_REVISION = 24 * 60 * 60 * 1000;
+const ORIGENES_REVISION = ["attendance", "manage_students"];
+
+const cuota = (parte, total) => (total ? redondear((parte * 100) / total) : null);
+
+// Los eventos los escribe el celular: un conteo raro cuenta como 0 y nada supera las filas leídas
+function aRevision(d) {
+    const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+    const leidas = n(d.rowsRead);
+    const tope = (v) => Math.min(n(v), leidas);
+    return {
+        teacherId: d.teacherId,
+        source: ORIGENES_REVISION.includes(d.source) ? d.source : "attendance",
+        leidas,
+        sinCambios: tope(d.rowsUnchanged),
+        editadas: tope(d.rowsEdited),
+        nombres: tope(d.namesEdited),
+        codigos: tope(d.codesEdited),
+        borradas: tope(d.rowsDeleted),
+    };
+}
+
+function resumirRevisiones(revisiones) {
+    const suma = (campo) => revisiones.reduce((s, r) => s + r[campo], 0);
+    const leidas = suma("leidas");
+    return {
+        imports: revisiones.length,
+        rowsRead: leidas,
+        unchanged: { rows: suma("sinCambios"), share: cuota(suma("sinCambios"), leidas) },
+        edited: { rows: suma("editadas"), share: cuota(suma("editadas"), leidas) },
+        deleted: { rows: suma("borradas"), share: cuota(suma("borradas"), leidas) },
+        fields: [
+            { key: "name", rows: suma("nombres"), share: cuota(suma("nombres"), leidas) },
+            { key: "code", rows: suma("codigos"), share: cuota(suma("codigos"), leidas) },
+        ],
+    };
+}
+
+// GET /scan-review?weeks=8  (solo admin)
+app.get("/scan-review", async (req, res) => {
+    if (req.usuario.rol !== "admin") throw new ErrorApi(403, "permission-denied");
+    const semanas = req.query.weeks === undefined ? SEMANAS_REVISION : Number(req.query.weeks);
+    if (!Number.isInteger(semanas) || semanas < 1 || semanas > 52) {
+        throw new ErrorApi(400, "invalid-argument", "weeks debe ser un entero entre 1 y 52.");
+    }
+
+    // Un solo filtro de igualdad (sin índice compuesto); la fecha se filtra en memoria
+    const desde = Date.now() - semanas * 7 * MS_POR_DIA_REVISION;
+    const snap = await getFirestore()
+        .collection("events")
+        .where("name", "==", "scan_review")
+        .limit(MAX_EVENTOS_REVISION)
+        .get();
+    const revisiones = snap.docs
+        .map((doc) => doc.data())
+        .filter((d) => d.createdAt?.toMillis?.() >= desde)
+        .map(aRevision);
+
+    const total = resumirRevisiones(revisiones);
+    // El campo que más se corrige es la respuesta directa de la BQ; null si no hay correcciones o empatan
+    const [nombre, codigo] = total.fields;
+    const masCorregido = nombre.rows === codigo.rows ? null : nombre.rows > codigo.rows ? "name" : "code";
+
+    res.status(200).json({
+        weeks: semanas,
+        teachers: new Set(revisiones.map((r) => r.teacherId)).size,
+        ...total,
+        mostCorrected: masCorregido,
+        bySource: ORIGENES_REVISION.map((origen) => ({
+            key: origen,
+            ...resumirRevisiones(revisiones.filter((r) => r.source === origen)),
+        })),
+    });
+});
 
 app.use(manejarErrores);
 module.exports = app;
