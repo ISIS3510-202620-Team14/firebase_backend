@@ -7,6 +7,9 @@ const { validarReporte, semanaDe } = require("../horas").syncValidation;
 const { NIVELES, MATERIAS, TIPOS_EVALUACION } = require("../estudiantes/niveles");
 const { snapshot, record, plain } = require("./records");
 
+const MAX_TITULO_ACTIVIDAD = 80;
+const MAX_MINUTOS_ACTIVIDAD = 240;
+
 function invalid(message = "Revisa los datos enviados.") {
     throw new ErrorApi(400, "invalid-argument", message);
 }
@@ -175,13 +178,24 @@ async function prepare(tx, uid, user, op) {
         set(ref, { ...data, fullName: body.fullName.trim() }, op.key);
     } else if (root === "plans") {
         if (op.action !== "create" || !esFecha(body.date)) invalid();
-        const template = await tx.get(db.collection("activityLibrary").doc(id(body.templateId)));
-        if (!template.exists || template.get("active") === false) invalid("La actividad ya no está disponible.");
-        set(ref, { activityId: parts[1], templateId: template.id, title: template.get("title"), subject: template.get("subject"),
-            minutes: template.get("minutes"), source: "library", kind: "flutter_activity",
+        let plan;
+        if (body.source === "custom") {
+            // Own activity (F09): the teacher writes the name and the minutes, like "Crear propia" in Kotlin.
+            const title = typeof body.title === "string" ? body.title.trim() : "";
+            if (title.length < 3 || title.length > MAX_TITULO_ACTIVIDAD || !MATERIAS.includes(body.subject) ||
+                !Number.isInteger(body.minutes) || body.minutes < 1 || body.minutes > MAX_MINUTOS_ACTIVIDAD) invalid();
+            plan = { title, subject: body.subject, minutes: body.minutes, source: "custom" };
+        } else {
+            const template = await tx.get(db.collection("activityLibrary").doc(id(body.templateId)));
+            if (!template.exists || template.get("active") === false) invalid("La actividad ya no está disponible.");
+            plan = { templateId: template.id, title: template.get("title"), subject: template.get("subject"),
+                minutes: template.get("minutes"), source: "library" };
+        }
+        set(ref, { activityId: parts[1], ...plan, kind: "flutter_activity",
             date: body.date, platform: "flutter", createdAt: now }, op.key);
+        // Same fields as the Kotlin event, so the library vs own count reads both apps the same way.
         set(db.collection("events").doc("flutter_activity_" + parts[1]), { teacherId: uid, name: "activity_selected",
-            activityId: parts[1], templateId: template.id, platform: "flutter", createdAt: Timestamp.now() });
+            activityId: parts[1], ...plan, platform: "flutter", createdAt: Timestamp.now() });
     }
     return { records: changed, writes, scope };
 }
