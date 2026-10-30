@@ -66,3 +66,77 @@ test("una corrida que se terminó no cuenta como abandonada", () => {
   ]);
   assert.strictEqual(g.abandoned, 0);
 });
+
+
+test("steps from different platforms or versions never share a report", () => {
+  const { seleccionar } = require("../functions/guias/resumen");
+  const events = [
+    ev("tutorial_started", "f", {platform:"flutter", tutorial_version:2}),
+    ev("tutorial_abandoned", "f", {platform:"flutter", tutorial_version:2, step:2}),
+    ev("tutorial_started", "k", {tutorial_version:2}),
+    ev("tutorial_abandoned", "k", {tutorial_version:2, step:2}),
+    ev("tutorial_started", "old", {platform:"flutter", tutorial_version:1}),
+    ev("tutorial_started", "unknown", {platform:"flutter"}),
+  ];
+  const selected = seleccionar(events,"flutter",2);
+  assert.strictEqual(selected.length,2);
+  assert.deepStrictEqual(asistencia(selected).abandonedAtStep,[{step:2,runs:1}]);
+  assert.strictEqual(asistencia(selected).runs,1);
+  assert.strictEqual(seleccionar(events,"kotlin",2).length,2);
+});
+
+
+test("report validates access, filters steps and reads bounded pages", async () => {
+  const Module = require("node:module");
+  const original = Module._load;
+  const calls = [];
+  let page = 0;
+  const items = [
+    ev("tutorial_started", "f", { platform:"flutter", tutorial_version:2 }),
+    ev("tutorial_abandoned", "f", { platform:"flutter", tutorial_version:2, step:2 }),
+    ev("tutorial_started", "k", { tutorial_version:2 }),
+  ];
+  const query = {
+    where(field, op) {
+      assert.ok((field === "createdAt" && op === ">=") || (field === "name" && op === "in"));
+      return this;
+    },
+    orderBy(field) { assert.strictEqual(field,"createdAt"); return this; },
+    limit(count) { assert.strictEqual(count,500); return this; },
+    startAfter(cursor) { calls.push(cursor); return this; },
+    async get() {
+      const data = page++ === 0 ? [...items, ...Array(497).fill({name:"unrelated"})] : [];
+      const docs = data.map((value) => ({data:() => value}));
+      return {size:docs.length,docs};
+    },
+  };
+  Module._load = function (name, parent, isMain) {
+    if (name === "firebase-admin/firestore") return {
+      getFirestore:() => ({collection:() => query}), Timestamp:{fromMillis:(n) => n},
+    };
+    if (name === "../estudiantes/auth") return {
+      autenticar(req,res,next) { req.usuario={rol:req.headers['x-role'] || 'admin'}; next(); },
+    };
+    return original.call(this,name,parent,isMain);
+  };
+  let app;
+  try { app = require("../functions/guias/index"); } finally { Module._load = original; }
+  const server = app.listen(0,"127.0.0.1");
+  await new Promise((resolve) => server.once("listening",resolve));
+  const base = `http://127.0.0.1:${server.address().port}/report`;
+  try {
+    assert.strictEqual((await fetch(base,{headers:{'x-role':'docente'}})).status,403);
+    assert.strictEqual((await fetch(base+'?platform=other')).status,400);
+    assert.strictEqual((await fetch(base+'?version=bad')).status,400);
+    assert.strictEqual((await fetch(base+'?weeks=0')).status,400);
+    const report = await (await fetch(base+'?platform=flutter&version=2')).json();
+    assert.strictEqual(report.platform,'flutter');
+    assert.strictEqual(report.tutorials.find((g)=>g.id==='attendance').runs,1);
+    assert.strictEqual(report.excluded,1);
+    assert.strictEqual(calls.length,1);
+    page=0;
+    const kotlin = await (await fetch(base)).json();
+    assert.strictEqual(kotlin.platform,'kotlin');
+    assert.strictEqual(kotlin.tutorials.find((g)=>g.id==='attendance').runs,1);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
