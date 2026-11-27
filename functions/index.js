@@ -357,3 +357,10 @@ exports.tutorials = onRequest(
   { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
   guias,
 );
+
+const fallos = require("./fallos");
+
+exports.crashes = onRequest(
+  { ...opciones, memory: "256MiB", timeoutSeconds: 60, maxInstances: 20 },
+  fallos,
+);
