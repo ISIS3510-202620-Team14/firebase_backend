@@ -29,6 +29,15 @@ function lunesActual() {
     return d.toISOString().slice(0, 10);
 }
 
+// Opens of one week counted per teacher (admins and other roles are left out)
+function aperturasPorDocente(docs) {
+    const porDocente = new Map();
+    docs
+        .filter((d) => d.get("rol") === "docente")
+        .forEach((d) => porDocente.set(d.get("uid"), (porDocente.get(d.get("uid")) || 0) + 1));
+    return porDocente;
+}
+
 // POST /  { opens: [{ clientId, openedAt, week, platform, appVersion }] }
 app.post("/", async (req, res) => {
     const lista = req.body?.opens;
@@ -80,18 +89,40 @@ app.get("/report", async (req, res) => {
     const week = req.query.week ?? lunesActual();
     if (!esFecha(week)) throw invalido(["week"]);
 
-    // Filters by one field only (no composite index); teachers are filtered in memory
+    // Filters by one field only (no composite index)
     const snap = await coleccion().where("week", "==", week).get();
-    const porDocente = new Map();
-    snap.docs
-        .filter((d) => d.get("rol") === "docente")
-        .forEach((d) => porDocente.set(d.get("uid"), (porDocente.get(d.get("uid")) || 0) + 1));
+    const porDocente = aperturasPorDocente(snap.docs);
 
     const masDeUna = [...porDocente.values()].filter((n) => n > 1).length;
     res.status(200).json({
         week,
         teachers: porDocente.size,
         teachersOverOnce: masDeUna,
+        provisional: week === lunesActual()
+    });
+});
+
+// GET /teachers?week=yyyy-MM-dd  (admin only)
+// Opens of each teacher in one week, for BQ 14. The app asks for several weeks at the same
+// time and applies the risk rule itself, the same one the teacher sees on Hoy.
+app.get("/teachers", async (req, res) => {
+    if (req.usuario.rol !== "admin") throw new ErrorApi(403, "permission-denied");
+
+    const week = req.query.week;
+    if (!esFecha(week)) throw invalido(["week"]);
+
+    const snap = await coleccion().where("week", "==", week).get();
+    const porDocente = aperturasPorDocente(snap.docs);
+
+    const uids = [...porDocente.keys()];
+    const perfiles = uids.length
+        ? await getFirestore().getAll(...uids.map((id) => getFirestore().collection("users").doc(id)))
+        : [];
+    const nombre = new Map(perfiles.map((p) => [p.id, p.get("fullName") ?? null]));
+
+    res.status(200).json({
+        week,
+        teachers: uids.map((uid) => ({ uid, fullName: nombre.get(uid) ?? null, opens: porDocente.get(uid) })),
         provisional: week === lunesActual()
     });
 });
